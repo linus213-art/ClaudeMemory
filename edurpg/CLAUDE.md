@@ -239,6 +239,32 @@ A hardcoded `'http://localhost:3020'` fallback works on the developer's desktop 
 
 Admin server binds 127.0.0.1 only — never expose to LAN.
 
+## 金流 / ECPay 綠界 — 狀態與待辦（2026-06-06）
+
+兩處金流都已串好並實測入帳成功(`backend/src/routes/payment.ts` + `backend/src/lib/ecpay.ts`):
+
+- **遊戲內**(edurpg.org,登入後) → `/api/payment/orders`(單包)、`/orders/multi`、`/orders/educational`,訂單綁登入帳號。
+- **products.html**(網頁儲值,免登入) → 輸入玩家 8 碼**推薦碼** → `/api/payment/web-topup/resolve`(預覽收款人)→ 確認「儲值給 〇〇〇」→ `/api/payment/web-topup` 建單刷綠界 → notify 把鑽石撥入該推薦碼帳號。此路徑刻意免登入(只會加值、不能扣款)。
+- 教育包 / 月卡在 products.html 都換算成鑽石(`EDU_RATE_PER_TWD = 3.2`💎/NT$),玩家再在遊戲內用鑽石開月卡(`subscription.ts` `payWith:'diamonds'`)。
+- 後台稽核:admin `index.html` → 💎 金流頁,有 email 篩選 + 撥入前/後鑽石餘額(由 `currency_transactions` 累計推算)。
+
+**正式商店代號 `3499022`(金流已申請通過),`.env`:`ECPAY_ENV=prod`。**
+
+### ⚠️ 電子發票尚未開通 — 待辦進度
+
+綠界**電子發票是跟金流分開的加值服務**,需要**公司營業登記** + 財政部字軌核配 + 後台「電子發票系統 → 資料管理與維護 → 字軌與配號設定」(B2C、字軌類別 **07 一般稅額**,對上 code 送的 `InvType='07'`)。**目前使用者尚無公司營業登記,無法申請。**
+
+未開通前若送 `InvoiceMark='Y'`,綠界收銀台會以錯誤碼 **1200005「無商品數量」**擋下整筆交易。因此整合金流發票已用 env flag 關閉:
+
+- `backend/.env` → `ECPAY_INVOICE_ENABLED=false`(預設關;`backend/src/lib/ecpay.ts` 的 `ecpayInvoiceEnabled()` 控制 `buildAioCheckoutForm` 是否帶發票欄位)。
+- 涵蓋全部結帳路徑(orders / multi / educational / web-topup)。
+
+**進度追蹤 — 之後要做的事(完成電子發票申請後):**
+1. 公司營業登記辦好 → 向綠界申請電子發票加值服務(電話 02-2655-1775)→ 簽約 + 財政部授權。
+2. 綠界後台設好 B2C 字軌與配號(07 一般稅額)。
+3. 把 `backend/.env` 的 `ECPAY_INVOICE_ENABLED` 改成 `true` → 重 build backend + 重啟 prod。**code 不必再改。**
+4. 過渡期(尚未開通)若需開發票,用綠界後台「B2C 電子發票 → 發票新增作業」手動補開。
+
 ## High-level architecture
 
 **Frontend (`src/`)** — Phaser 4 game with React overlays:

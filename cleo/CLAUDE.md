@@ -508,3 +508,43 @@ add/remove/list 是**快速同步** provider 呼叫,經注入的 `WatchlistGatew
 **維運哨兵範例**:`scripts/bot_exposure_report.py`(每日 cron 09:00)= 讀 api.log 流量快照 →
 Ollama 寫成 zh-TW 自然語言 → DM 給站長。背景見 memory `[[project_calendar_webhook_tunnel_bound]]`
 (2026-05-31 全域關 Bot Fight Mode 後,用它觀察對外曝險是否上升、評估要不要升 Cloudflare Pro)。
+
+---
+
+## 15. Outlook 行事曆同步(三方法 + 桌面 app 散布,CLE-546/547)
+
+把 Outlook 行事曆同步進 Cleo 有**三條路**,公開教學頁 = `https://onboard.edurpg.org/outlook-sync`
+(檔案 `apps/web/app/outlook-sync/page.tsx`,Next.js 靜態頁,用 `LegalShell` 元件)。背景見
+memory `[[project_outlook_local_com_sync]]`、`[[project_microsoft_publisher_verification]]`。
+
+1. **OAuth 直接連結**(個人帳號最適合)— Discord `/bind microsoft`(cog `apps/bot/cleo_bot/cogs/oauth.py`)
+   → `/oauth/microsoft/start` → `Calendars.Read`(scope 已啟用;`Mail.Read` 仍關著等 publisher
+   verification)。企業租戶常被 risk-based step-up consent 擋成「需要管理員核准」→ 要 IT admin consent。
+2. **桌面同步程式**(公司帳號 + 傳統 Outlook)— 本機 COM 匯出 .ics 自動上傳,**完全繞開 OAuth /
+   publisher verification / 公司登記**。
+   - 後端 **CLE-546**:device token(`/connect-outlook` 發、`/devices` 撤;table `user_device_tokens`)
+     + `POST /api/calendar/ics-ingest`(Bearer token、auto-commit、window reconcile soft-delete +
+     bulk-delete 護欄)。route `apps/api/cleo_api/routes/calendar/ics_ingest.py`、cog
+     `apps/bot/cleo_bot/cogs/connect_outlook.py`。
+   - 桌面 app **CLE-547**:**原始碼留在私有主 repo** `tools/cleo-outlook-sync/`(.NET 8 WinForms
+     tray app,late-binding COM,只支援 **classic Outlook**;build/簽章見該目錄 `BUILD.md`)。
+3. **ICS 訂閱**(新 Outlook / 網頁版 / outlook.com)— Outlook 發佈行事曆取 ICS 連結 → Cleo 設定
+   `/settings/connections` 貼上 → `POST /calendar/ics-subscribe` → worker `ics_calendar_sync` 定時抓,
+   `IcsDiffMerger`(source_type=`ics`)會**硬刪** feed 裡消失的事件。device/手動上傳則是 source_type=`ics_upload`。
+
+### ⚠️ 桌面 app 散布的鐵則(改版必看)
+
+- **binaries 不放主 repo**(主 repo private → 它的 release **無法匿名下載**,實測 404;且 58MB 會撐爆 git)。
+- 散布走**另一個公開 repo** `linus213-art/CleoOutlookSync`(只放 README + release binaries,**不放原始碼**)。
+- 網頁下載鈕用 **`releases/latest/download/<檔名>`**(GitHub 自動導向最新 release),所以
+  **發新版時 asset 檔名必須維持不變**:`CleoOutlookSync-win-x64-self-contained.zip`(免 runtime)、
+  `CleoOutlookSync-win-x64-framework-dependent.zip`(需 .NET 8)。檔名不變 → 頁面完全不用改;改了檔名/命名才要回去改頁面。
+- 發新版流程:Windows 上照 `tools/cleo-outlook-sync/BUILD.md` `dotnet publish` → 打包兩個同名 zip →
+  在 **CleoOutlookSync 公開 repo** `gh release create`(可由已認證 `gh` 從主 repo private release
+  `gh release download` 撈檔再轉上去)。
+- .NET 8 runtime 連結用微軟官方 aka.ms 別名(永遠最新):
+  `https://aka.ms/dotnet/8.0/windowsdesktop-runtime-win-x64.exe`。
+- exe 目前**未簽章**,首次執行會跳 SmartScreen(頁面已註明點「其他資訊 → 仍要執行」)。
+
+改 `apps/web/app/outlook-sync/` 後要 `cd apps/web && pnpm build && pm2 restart cleo-web` 才生效(見 §2)。
+未來郵件功能範圍已定 = **只抓 metadata(寄件者/標題/時間)**,不抓內文、不自動回信。
