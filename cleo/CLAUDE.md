@@ -313,7 +313,18 @@ Anthropic-compatible endpoint,所以走同一個 `AsyncAnthropic` SDK,只是 `ba
 
 **資料模型**:`packages/shared/cleo_shared/db/meeting_recordings.py`
 - `MeetingRecording` (line 79-171):`audio_blob_url`、`transcript_blob_url`、`status`(`awaiting_confirmation` → `pending` → `queued` → `preprocessing` → `transcribing` → `completed` / `failed` / `cancelled`)、`backend_used`
-- `MeetingArtifact` (line 173-230):`artifact_kind`(`minutes`/`summary`/`follow_up`/`next_steps`)、`content_blob_url`(Word doc S3 URL)、`content_text_cipher`(加密文本)
+- `MeetingArtifact` (line 173-230):`artifact_kind`(`minutes`/`summary`/`recap`/`follow_up`/`next_steps`)、`content_blob_url`(Word doc S3 URL)、`content_text_cipher`(加密文本)
+
+> ⚠️ **新增 artifact kind 要同步改「四處」,漏一處就靜默炸(CLE-624 踩過)**:`recap`(會議總結)當初只加進
+> `MeetingArtifactKind` Literal + DM 按鈕 + cog 顯示表 + DB CheckConstraint,**獨漏 runtime 白名單 tuple**
+> `MEETING_ARTIFACT_KINDS`(同檔 `db/meeting_recordings.py`)。結果每次點「會議總結」,`repo.get_artifact()`
+> 第一行 `_validate_artifact_kind()` 就丟 `ValueError: invalid meeting artifact kind` —— **連 LLM 都沒呼叫到**,
+> 使用者只看到泛用「請稍後再試」DM(reason=None)。加新 kind 的 checklist:(1) `MeetingArtifactKind` Literal
+> (2) `MEETING_ARTIFACT_KINDS` tuple (3) DB CheckConstraint (`MeetingArtifact.__table_args__`)
+> (4) cog `_KIND_DISPLAY_ZH` / `_KIND_INTRO_EMOJI`。回歸測試
+> `test_meeting_recordings_repo.py::test_migration_and_model_omit_raw_transcript_column` 現在用
+> `get_args(MeetingArtifactKind)` 動態比對 tuple,tuple 與 Literal 一 drift 就紅燈 —— 別把它改回寫死的集合。
+> 又一個 `[[feedback_task_must_be_wired_in]]` 變種:同一概念散在多個註冊點,unit test 綠燈不等於接好。
 
 ---
 
