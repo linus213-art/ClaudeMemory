@@ -239,6 +239,19 @@ DATABASE_URL=postgresql+asyncpg://cleo:<pw>@localhost:5432/cleo uv run alembic u
 
 ---
 
+## 6b. Google API / 模型(用到哪些、退役狀態)
+
+| 用途 | 檔案 | 模型 / 端點 | API |
+|---|---|---|---|
+| 頭像 / landing 圖生成(一次性,maintainer 手動跑) | `scripts/generate_avatars.py`、`generate_persona_avatars.py`、`generate_landing_images.py` | **`gemini-3.1-flash-image`** | `google-genai` SDK `client.models.generate_content`(回 inline image) |
+| 地點 / 餐廳查詢 | `packages/providers/cleo_providers/places/places_client.py:19` | Google Places API(`places.googleapis.com/v1`) | REST |
+| 路線 / 交通 | `packages/providers/cleo_providers/googlemaps/client.py:44` | Google Maps API(`maps.googleapis.com`) | REST |
+| 成本表 | `services/pricing_sources/google_genai.py`、`static_fallbacks.py` | `gemini-2.5-flash` 等(定價對照) | 只是 pricing tracking,**不是**真的呼叫 |
+
+**金鑰**:`GEMINI_API_KEY` / `GOOGLE_API_KEY`(圖片腳本兩者皆收)、`GOOGLE_IMAGEN_API_KEY`(settings 仍保留欄位)、Places/Maps 用各自 key。
+
+**Imagen 4 退役遷移(2026-08-17,已完成):** 三個圖片腳本原本寫死 `imagen-4.0-fast-generate-001`(Google 將於 2026-08-17 退役回 404),已遷到 `gemini-3.1-flash-image`。遷移重點(改 model 名不夠):Imagen 的 `client.models.generate_images(...)` + `GenerateImagesConfig`(`number_of_images` / `safety_filter_level` / `person_generation`)在 Gemini 路徑不存在 → 改用 `generate_content(...)`,aspect ratio 移到 `image_config`(`types.ImageConfig(aspect_ratio=...)`,以 getattr 保護舊 SDK),圖片從回應的 `candidates[].content.parts[].inline_data.data` 取(不是 `generated_images[].image.image_bytes`)。每個腳本內有 `_image_gen_config` / `_first_image_bytes` 兩個 helper 封裝這層差異。
+
 ## 7. 會議錄音 pipeline(從 Discord attachment → 會議紀錄)
 
 短語音指令(<60s)經本地 WhisperX 轉逐字稿後走同一條 recipe;長語音仍走 meeting pipeline。

@@ -265,6 +265,20 @@ Admin server binds 127.0.0.1 only — never expose to LAN.
 3. 把 `backend/.env` 的 `ECPAY_INVOICE_ENABLED` 改成 `true` → 重 build backend + 重啟 prod。**code 不必再改。**
 4. 過渡期(尚未開通)若需開發票,用綠界後台「B2C 電子發票 → 發票新增作業」手動補開。
 
+## Google API / 模型(用到哪些、在哪、退役狀態）
+
+所有 Gemini model 走 REST `generativelanguage.googleapis.com/v1beta/models/<model>:generateContent`(`backend/src/lib/geminiImageGen.ts`),model 名存在 DB provider row,admin 可用 `endpoint` 或 `notes` 的 `model=...` 逐列覆寫,下面是 fallback 預設值:
+
+| 用途 | 檔案(預設) | 預設模型 | API |
+|---|---|---|---|
+| 出題配圖(quiz 圖片生成) | `lib/geminiImageGen.ts:58` | `gemini-2.5-flash-image` | GenAI generateContent(回 inline image) |
+| 文字 LLM(三檔 tier) | `lib/llmText.ts:37-39` | `gemini-2.5-flash-lite` / `-flash` / `-pro` | GenAI generateContent |
+| Vision(圖片判讀) | `lib/vision.ts:149,220` | `gemini-2.5-flash` | GenAI generateContent |
+| 圖片審核(主)| `lib/imageModeration.ts:155` | `gemini-2.5-flash` | GenAI generateContent |
+| 圖片審核(備援,NSFW)| `lib/imageModeration.ts:266` | — | **Google Vision API**(`GOOGLE_VISION_API_KEY`,fail-open) |
+
+**Imagen 4 退役(2026-08-17)不影響本專案** — 全部走 `gemini-2.5-*`,無任何 `imagen-4.0-*` 端點。Google 通知點到 project `gen-lang-client-0836655205` 是以 GCP project 為單位偵測(同 key 下別的 app/手動測試曾打過 Imagen 4)。詳見跨專案盤點:cleo 的一次性頭像腳本已從 `imagen-4.0-fast` 遷到 `gemini-3.1-flash-image`;Ai_Stock_Agent 不受影響。
+
 ## High-level architecture
 
 **Frontend (`src/`)** — Phaser 4 game with React overlays:

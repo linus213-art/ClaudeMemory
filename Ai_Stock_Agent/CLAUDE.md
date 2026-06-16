@@ -339,6 +339,16 @@ curl http://127.0.0.1:8080/healthz
 
 ---
 
+## 4b. Google API / 模型(用到哪些)
+
+| 用途 | 檔案 | 模型 / 端點 | 備註 |
+|---|---|---|---|
+| LLM(text,Gemini provider) | `ai_stock_agent/llm/providers/gemini.py:20-21` | `gemini-2.5-flash`(fast)、`gemini-2.5-pro`(pro) | `google-genai` SDK `generate_content`;router fallback chain 的一環(Claude/OpenAI/Gemini) |
+| 成本表 | `ai_stock_agent/llm/router.py:52-53` | 同上(定價對照) | 只是 pricing,不是呼叫 |
+| 新聞抓取 | `ai_stock_agent/data/news_adapter.py:25` | Google News RSS(`news.google.com/rss/search`) | 純 RSS,**非** GenAI |
+
+**金鑰**:`GOOGLE_API_KEY`(`config.py:97`,`google_genai` 用)。**沒有任何圖片生成 / Imagen 呼叫** → Imagen 4 退役(2026-08-17)**不影響本專案**。Gemini 文字模型也不在退役名單。
+
 ## 5. 其他入口 + 過去 session 慣例
 
 ### 維運腳本
