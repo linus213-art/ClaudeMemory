@@ -561,9 +561,13 @@ memory `[[project_outlook_local_com_sync]]`、`[[project_microsoft_publisher_ver
      + `POST /api/calendar/ics-ingest`(Bearer token、auto-commit、window reconcile soft-delete +
      bulk-delete 護欄)。route `apps/api/cleo_api/routes/calendar/ics_ingest.py`、cog
      `apps/bot/cleo_bot/cogs/connect_outlook.py`。
-   - **Windows app CLE-547**:**原始碼留私有主 repo** `tools/cleo-outlook-sync/`(.NET 8 WinForms
+   - **Windows app CLE-547/655**:原始碼**在 main** `tools/cleo-outlook-sync/`(.NET 8 WinForms
      tray app,late-binding **COM** `GetCalendarExporter().SaveAsICal`,只支援 **classic Outlook**;
      build/簽章見該目錄 `BUILD.md`)。Outlook 原生匯出 → 週期性事件輸出 **RRULE**(後端展開)。
+     **TFM = `net8.0-windows` + WinForms → 只能在 Windows build**(這台 Mac mini 建不了;維護者本機工作目錄
+     `E:\scripts\cleo-outlook-sync\`)。CLE-655 已對齊 Mac:送 `X-Cleo-Platform: windows`(CLE-653)+ build 戳
+     注入(`CleoOutlookSync.csproj` 的 `BuildStamp`,`yyyyMMddHHmm` UTC,每次 publish 自動,別手動 bump)+ tray
+     顯示版本/更新提示(CLE-654)。`src/CleoOutlookSync/Resources/app.ico` **必須存在**(csproj 引用,缺了 build 失敗)。
    - **macOS app CLE-548**:**原始碼留私有主 repo** `tools/cleo-outlook-sync-mac/`(Swift/AppKit
      `NSStatusItem` 選單列 app,`LSUIElement`)。**不靠 Outlook app、也不分新舊 Outlook**,改用
      **EventKit**(`EKEventStore`)讀系統層行事曆 → 前提是使用者把 Outlook/Exchange/M365 帳號加進
@@ -589,10 +593,56 @@ memory `[[project_outlook_local_com_sync]]`、`[[project_microsoft_publisher_ver
     `CleoOutlookSync-win-x64-framework-dependent.zip`(需 .NET 8)。
   - macOS:`CleoOutlookSync-macos-universal.dmg`(universal,**已簽章+公證**)。
 - 發新版流程:
-  - Windows:照 `tools/cleo-outlook-sync/BUILD.md` `dotnet publish` → 打包兩個同名 zip → `gh release upload`。
-  - macOS:照 `tools/cleo-outlook-sync-mac/RELEASE.md` 步驟 3→4→5(`build-app.sh` 帶 `SIGN_ID` →
-    `package-dmg.sh` 帶 `NOTARY_PROFILE=cleo-notary` → `gh release upload`)。憑證/notary profile 已一次性
-    設好在 Mac mini keychain(Developer ID `ALGJXG7K45`)。
+  - Windows(**在 Windows 機器上**,照 `tools/cleo-outlook-sync/BUILD.md`):
+    ```powershell
+    # self-contained(免 runtime,~64MB)
+    dotnet publish src\CleoOutlookSync\CleoOutlookSync.csproj -c Release -r win-x64 --self-contained true -o publish-sc
+    # framework-dependent(需 .NET 8;⚠️ 一定要加下面這個 flag,否則噴 NETSDK1176——壓縮只支援 self-contained)
+    dotnet publish src\CleoOutlookSync\CleoOutlookSync.csproj -c Release -r win-x64 --self-contained false `
+      -p:SelfContained=false -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=false -o publish-fd
+    Compress-Archive publish-sc\CleoOutlookSync.exe CleoOutlookSync-win-x64-self-contained.zip -Force
+    Compress-Archive publish-fd\CleoOutlookSync.exe CleoOutlookSync-win-x64-framework-dependent.zip -Force
+    gh release upload outlook-sync-v0.1.0 CleoOutlookSync-win-x64-self-contained.zip CleoOutlookSync-win-x64-framework-dependent.zip --repo linus213-art/CleoOutlookSync --clobber
+    ```
+    發完版 ⚠️ 把 tray 顯示的 12 碼 build 戳設進站長 `.env` 的 `CLEO_LATEST_CLIENT_BUILD_WINDOWS=<戳>` + `restartCleo`
+    (同 §下方 CLE-654 那條;沒設 Windows 端「🔔 有新版」永遠不亮)。exe **未簽章**(SmartScreen)。
+  - macOS:憑證 + notary profile 已一次性設好在 Mac mini keychain(Developer ID
+    `Chih-Wei Lee (ALGJXG7K45)` + notary profile `cleo-notary`),**之後每次發版只跑下面四步**。
+    `RELEASE.md` 仍是權威文件,但它開頭的 `cd …feat-cle-548-…/tools/cleo-outlook-sync-mac` **是過期 worktree 路徑**;
+    實際就在 `tools/cleo-outlook-sync-mac/`。**完整 inline 步驟(踩過坑後的正解):**
+
+    ```bash
+    cd /Users/linus/cleo/tools/cleo-outlook-sync-mac
+
+    # 0) ⚠️ 必做:解鎖 keychain。Mac mini headless 會自動鎖,鎖住時 codesign / notarytool
+    #    全噴 keychainLocked(keychainName: "default")、連 build+sign 第一步都過不了。
+    #    要使用者本人跑(會互動式問登入密碼;session 內用 `! security unlock-keychain …`):
+    security unlock-keychain ~/Library/Keychains/login.keychain-db
+
+    # 1) build + 簽章(universal、Hardened Runtime;腳本內建 --options runtime)
+    SIGN_ID="$(security find-identity -v -p codesigning | sed -n 's/.*"\(Developer ID Application: .*\)"/\1/p' | head -1)"
+    SIGN_ID="$SIGN_ID" scripts/build-app.sh
+    codesign --verify --strict --verbose=2 build/CleoOutlookSync.app   # 要 valid on disk
+
+    # 2) 打包 dmg + 公證 + 釘票(notarytool submit --wait,通常 1~5 分鐘等 Apple 回 Accepted)
+    NOTARY_PROFILE=cleo-notary scripts/package-dmg.sh
+    xcrun stapler validate build/CleoOutlookSync-macos-universal.dmg   # The validate action worked!
+    spctl -a -vv build/CleoOutlookSync.app                              # source=Notarized Developer ID
+
+    # 3) 上傳到既有 latest tag(--clobber 只換 mac asset,Windows 兩個 zip 不動;別 gh release create)
+    TAG="$(gh release view --repo linus213-art/CleoOutlookSync --json tagName --jq .tagName)"  # 目前 outlook-sync-v0.1.0
+    gh release upload "$TAG" build/CleoOutlookSync-macos-universal.dmg --repo linus213-art/CleoOutlookSync --clobber
+
+    # 4) 驗匿名固定連結回 200(對外可用才算發版完成)
+    curl -sIL -o /dev/null -w '%{http_code}\n' \
+      https://github.com/linus213-art/CleoOutlookSync/releases/latest/download/CleoOutlookSync-macos-universal.dmg
+    ```
+    （網頁下載鈕指向固定 `latest/download` 連結、已在 main,檔名不改就不必動網頁。）
+
+    # 5) ⚠️ CLE-654:發版後務必把對應平台的 `.env` build 戳更新成「這次注入的 CFBundleVersion
+    #    /FileVersion」(`date -u +%Y%m%d%H%M`,build 腳本印在 `==> stamped …`),再 restartCleo:
+    #      CLEO_LATEST_CLIENT_BUILD_MACOS=<這次的 12 碼戳>   # Windows 改 CLEO_LATEST_CLIENT_BUILD_WINDOWS
+    #    沒更新 → ingest 回的 `latest_client_build` 還是舊值/空,client 的「🔔 有新版可更新」永遠不會亮。
 - .NET 8 runtime 連結用微軟官方 aka.ms 別名(永遠最新):
   `https://aka.ms/dotnet/8.0/windowsdesktop-runtime-win-x64.exe`。
 - **簽章狀態不同**:Windows exe **未簽章**,首次執行跳 SmartScreen(頁面註明「其他資訊 → 仍要執行」);
