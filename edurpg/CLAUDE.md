@@ -2,6 +2,12 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## 語言規則（最高優先，務必遵守）
+
+> **永遠用繁體中文回覆使用者。** 不論對話進行多久、不論工具輸出或程式碼是什麼語言，
+> 對使用者的所有回覆（說明、摘要、提問、進度回報）一律用繁體中文。**不要中途自行切換成英文。**
+> 程式碼、commit message、檔名、API 等技術名詞可保留原文（英文），但包覆它們的敘述文字要是中文。
+
 ## macOS 本機環境（最常被問,先看這段）
 
 > 這個 repo 同時跑 Windows 工作站(`E:\AI_Workbench_Data\edurpg`)和 macOS(`/Users/linus/edurpg`)。
@@ -19,14 +25,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### 2. 服務啟動 / 停止(Mac)
 
-主腳本是 bash,不是 PowerShell —— `tools/restart_prod.sh`:
+主腳本是 bash,不是 PowerShell —— `scripts/restart_prod.sh`:
 
 ```bash
 cd /Users/linus/edurpg
-./tools/restart_prod.sh                  # 啟動順序:postgres 檢查 → backend(3020)→ admin(3010)→ frontend(3005)→ cloudflared
-./tools/restart_prod.sh --stop-only      # 只停服務
-./tools/restart_prod.sh --build-all      # 強制重 build backend + frontend
-./tools/restart_prod.sh --no-tunnel      # 跳過 cloudflared
+./scripts/restart_prod.sh                  # 啟動順序:postgres 檢查 → backend(3020)→ admin(3010)→ frontend(3005)→ cloudflared
+./scripts/restart_prod.sh --stop-only      # 只停服務
+./scripts/restart_prod.sh --build-all      # 強制重 build backend + frontend
+./scripts/restart_prod.sh --no-tunnel      # 跳過 cloudflared
 ```
 
 健康檢查 timeout 45s,任一失敗就終止並 dump 該服務最後 30 行 log。Postgres 由 Homebrew (`postgresql@16`) 起,腳本只檢查不重啟(共用 idempotent 服務)。
