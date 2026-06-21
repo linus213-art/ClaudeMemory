@@ -35,6 +35,12 @@ cd /Users/linus/edurpg
 ./scripts/restart_prod.sh --no-tunnel      # 跳過 cloudflared
 ```
 
+> 🟥 **改 frontend code → 必須 `--build-all` 或 `--build-frontend`，否則 dist 不會重 build、prod 仍服舊 bundle**。
+> 這個重複踩雷過。預設 `restart_prod.sh` 只在 `dist/` 不存在時才 build frontend，所以你改了 `src/...`、commit、push、`restart_prod.sh` 跑完一切看似 OK，但 prod 服的還是上次 build 的舊 bundle、改動完全沒生效（特別是 mobile，因為 desktop 可能還沒被 cloudflared 邊緣節點 cache 命中、會看到正確版的）。
+> Backend code 同理（改 `backend/src/...` 要 `--build-backend` 或 `--build-all`），但 backend prisma client + ts 編譯比較容易被注意到。
+> **規則：只要改了 `src/...` 或 `backend/src/...` 任何 .ts，restart_prod 一律帶 `--build-all`。**
+> 例外：只改 `public/`（圖片、JSON、assets）→ 不必 build，restart 就生效。
+
 健康檢查 timeout 45s,任一失敗就終止並 dump 該服務最後 30 行 log。Postgres 由 Homebrew (`postgresql@16`) 起,腳本只檢查不重啟(共用 idempotent 服務)。
 
 **重啟 PROD 前**仍要先確認沒人在線:
@@ -320,6 +326,128 @@ Console default codepage on this box is 950 (Big5), but **PowerShell 7.6+ (`pwsh
 - **PowerShell wrapper splat must use a hashtable, never `$args`** — `$args` is an automatic positional array and binds to `param()` order (e.g. `'-NoDb'` lands in `[int]$ProdFrontendPort`). Use `$h = @{ NoProd = $true; … }; & $inner @h`.
 - **Azure provider `endpoint` field often stores a region code** (e.g. `'eastasia'`) not a URL. Adapters must build `https://${region}.{tts|stt}.speech.microsoft.com/...` themselves; don't pass the value into `fetch()` directly or it throws `TypeError: Invalid URL`.
 - **Don't restart prod without confirmation** unless explicitly authorized for that turn. The standing-authorization phrases are listed in `Develop_MEMORY.md` §2.4. Frontend hot-reload / idempotent migrations are exempt.
+
+## 💡 改 UI / 寫新場景前先讀 `docs/feedback/`
+
+`docs/feedback/` 是 **bug pattern library** — 每條都至少撞過一次（很多是反覆撞）。
+寫新 Phaser scene、改既有 UI、產圖前，**先看 [docs/feedback/README.md](docs/feedback/README.md) 索引**找對應分類。
+
+**最高頻雷區 = 螢幕邊界 / canvas 縮放 / UI 跨設備位置**（手機跑版、桌面 OK 但手機壞、按鈕視覺跟點擊熱區錯位）—— 幾乎每次做新 UI 都會撞。看：
+- [feedback_phaser_scene_scaling.md](docs/feedback/feedback_phaser_scene_scaling.md) — 新場景沒設 setSceneBg/setupResponsiveCamera 的標準解法
+- [feedback_phaser_canvas_to_world_pattern.md](docs/feedback/feedback_phaser_canvas_to_world_pattern.md) — 跨設備 UI 位置必須抄 BattleScene 完整公式
+- [feedback_phaser_image_aspect_distortion.md](docs/feedback/feedback_phaser_image_aspect_distortion.md) — 背景圖 setDisplaySize 必須保持比例
+
+下面這節（Phaser 場景縮放）是精簡警示，**完整 root cause 跟更多 case 在 `docs/feedback/`**。
+
+## Phaser 場景縮放與背景填滿 — 老問題，每個新場景都要做（別再犯）
+
+> 反覆出現的 bug：新場景的背景沒有放大填滿整個螢幕，手機上左右（或上下）露出**前一個場景的背景圖**
+> （例：單人關卡地圖左右露出標題畫面的綠樹草地）。根因與固定解法如下，**寫新場景時照抄**。
+
+**為什麼會這樣**：遊戲用固定設計解析度 `1280×720`（`config/constants.ts` 的 `GAME_WIDTH/HEIGHT`）+
+Phaser `Scale.FIT`（`main.ts`）。FIT 會在比例不符的手機上**留信箱黑邊**。那些黑邊由一個 full-viewport 的
+DOM 層 `#scene-bg`（`position:fixed; inset:0`）墊在 canvas 後面顯示。**`#scene-bg` 是全域共用的**——
+若新場景沒去設定它，就會殘留**上一個場景**的背景圖從邊條露出來。
+
+### 自動偵測畫面邊界的機制（已經內建、全域，**不要重造一套**）
+
+「偵測使用者螢幕上下左右邊界 → 換算縮放比例」這件事**已經做好了**，分三層；這個邊界 bug 被修很多次，
+都不是因為偵測壞掉，而是**新場景沒去消費**這套既有機制。修法永遠是讓新場景照下面消費，**不是再寫一套偵測**。
+
+| 層 | 在哪 | 做什麼 |
+|---|---|---|
+| HTML | `index.html`：`viewport-fit=cover` + `env(safe-area-inset-*)` → `--app-safe-*` CSS 變數；`#scene-bg`、`#game-container`（sized to `--app-vw/--app-vh`） | 把實體視窗大小 + iOS 瀏海/導覽列安全區暴露成 CSS 變數 |
+| 啟動 | `main.ts:69` `initViewportManager()`（`src/systems/ViewportManager.ts`） | 量 `visualViewport` 寬高 + 4 邊 safe-area → 寫進 `--app-vw/--app-vh/--safe-*`；監聽 resize/orientation/visualViewport 變更即時更新 |
+| 登入 | `AuthOverlay.tsx:251` `saveDeviceMetaToDB()` | 登入成功後把該裝置的 vw/vh/safe-area/DPR/螢幕尺寸 POST 到後端存檔（除錯用） |
+| 每場景 | `setupResponsiveCamera()`（見下方步驟 2） | 讀 `visualViewport` → `setGameSize` + **換算 zoom 比例** `min(w/1280, h/720, 1.0)` 填滿並置中 |
+
+> 換言之：邊界偵測是「全域已備、開機就跑」；**每個 Phaser 場景要做的只是步驟 1+2 去用它**。看到邊界又露餡，
+> 先檢查那個場景漏了 `setSceneBg` / `setupResponsiveCamera`，不要去動 ViewportManager。
+
+**每個 Phaser 場景的 `create()` 都必須做這兩件事**（缺一就會踩雷）：
+
+1. **`setSceneBg(url | null)`**（`src/lib/sceneBg.ts`）—— 設定 / 清掉那個全幅 DOM 背景。
+   傳該場景自己的背景圖 URL（`center/cover` 會自動填滿）；沒有圖就傳 `null`（邊條變純黑 `#000`，
+   乾淨、可接受）。**忘了呼叫 = 上個場景的背景圖從邊條露出**（就是這個老 bug）。
+2. **撐滿視窗 + 置中縮放**：把 canvas 撐到裝置視窗，再把 `1280×720` 設計格 zoom-to-fit 並置中——
+   照抄 `StudyTimerScene.setupResponsiveCamera()`（`BattleScene` / `ResultScene` 同款）：
+   ```ts
+   this.scale.setGameSize(vw, vh);                 // canvas = 裝置視窗（vw/vh 來自 visualViewport）
+   this.cameras.main.setSize(w, h);
+   const z = Math.min(w / GAME_WIDTH, h / GAME_HEIGHT, 1.0);
+   this.cameras.main.setZoom(Math.max(0.4, z));
+   this.cameras.main.centerOn(GAME_WIDTH / 2, GAME_HEIGHT / 2);
+   // 監聽 this.scale.on('resize', …) 重套；SHUTDOWN 時 setGameSize(GAME_WIDTH, GAME_HEIGHT) 還原
+   ```
+   這樣設計格內既有的 `GAME_WIDTH/HEIGHT` 座標**全部仍有效**（置中縮放，不必改座標）。
+
+**排版輔助**：需要貼齊邊／角、避開 iOS 瀏海安全區時，用 `src/lib/layout.ts` 的 `getViewport(this.scale)`
++ anchor helper（`topRight` / `bottomCenter` / `center` …），不要再手算 `GAME_WIDTH * 0.85` 這種座標。
+安全區資訊由 `ViewportManager`（`src/systems/ViewportManager.ts`，登入時偵測螢幕上下左右邊界）寫進
+CSS 變數供讀取。
+
+> 自我檢查：新場景的 `create()` 有沒有 `setSceneBg(...)`？手機上轉到該場景，左右上下還會不會看到別的
+> 場景的圖？會 → 八成漏了上面兩步。已知正解範例：`BattleScene` / `StudyTimerScene` / `ResultScene` /
+> `StoryMapScene`。
+
+### 捲動場景的固定 UI「看得到、按不到」（Phaser 坑，已踩過）
+
+可水平/垂直**捲動的場景**（如 `StoryMapScene` 地圖）若用 **`camera.scrollX/scrollY` 捲相機**，又把
+header/返回鈕/分頁等固定 UI 設 **`setScrollFactor(0)`**，則**相機一旦捲動（scroll≠0），那些固定 UI 的
+「點擊判定區」會被相機位移帶偏**——按鈕畫面在原位、但 tap 熱區跑掉，變成「看得到卻按不動」。
+
+**正解：不要捲相機，改捲世界容器。** 把場景內容放進一個 `Container`（worldLayer），拖曳/慣性/置中
+都改 `worldLayer.x = -scroll`（相機永遠停在 `scrollX=0`）。節點等內容在容器裡照樣移動且可點；固定 UI
+因為相機沒捲，判定區正確、按得動。
+
+```ts
+// ❌ 壞：捲相機 + scrollFactor(0) 固定 UI → 固定 UI 點不到
+this.cameras.main.scrollX = target;
+// ✅ 對：相機不動，捲世界容器
+this.worldLayer.x = -target;   // scroll = -worldLayer.x；node hit areas 跟著容器走，固定 UI 不受影響
+```
+
+> 自我檢查：場景會捲動嗎？有沒有 `setScrollFactor(0)` 的按鈕？若用 `camera.scrollX` 捲 → 改成捲容器。
+> 正解範例：`StoryMapScene`（`installDragControls` / `update` / `focusScrollX` 全走 `worldLayer.x`）。
+
+### Phaser 開發踩過的坑（彙整 — 寫新場景 / 改既有場景前先掃一遍）
+
+下列每條都至少踩過一次、有對應 commit。**寫新 Phaser code 前快速 scan 一遍**比事後 debug 省很多時間。
+
+1. **動態載圖一定要 listener**：`load.image(key, url)` 之後**立刻** `textures.exists(key)` 永遠 false（async）。沒 listener → 物件第一次 render 永遠空白。修法：
+   ```ts
+   this.load.image(key, url);
+   this.load.start();                              // idempotent
+   const qSnap = this.questionsDone;
+   this.load.once(`filecomplete-image-${key}`, () => {
+     if (this.scene.isActive() && this.questionsDone === qSnap) this.updateMonsterVisual();
+   });
+   ```
+   別用 `!this.load.isLoading()` 當 guard，會漏 enqueue。詳見 memory `feedback_phaser_async_texture_race`。
+
+2. **`scene.start` 復用 instance、Phaser 銷毀 GameObject 但 field 不會清**：所有「懶建立」的 GameObject field（`if (!this.foo) this.foo = add.xxx()`）都要在 `init()` 重置回 `undefined`。否則下次進場景 `if (this.foo)` 為 true、操作 destroyed sprite → 卡死。範例 BattleScene 的 `monsterImage` / `bossChargeBar` / `wrongAnswerCard`。
+
+3. **`setDisplaySize(w, h)` 別獨立算 w/h**：寬高 scale 不同會把圖拉變形（圓變橢圓）。背景圖用 `background-cover` 邏輯：`scale = Math.max(wNeed/texW, hNeed/texH)`，套到兩個維度。
+
+4. **跨設備 UI 位置抄 `BattleScene.canvasToWorldX/Y` 完整公式**（含 `viewW = cam.width/zoom + viewLX = cam.scrollX + cam.width/2 - viewW/2`）。**不要簡化成 `scrollX + canvas/zoom`** — 桌面 zoom=1 看起來對，手機 zoom<1 就會偏。詳見 memory `feedback_phaser_canvas_to_world_pattern`。
+
+5. **camera 不捲動的場景不要 `setScrollFactor(0)`**：Phaser 4 + `centerOn` 設了非零 scrollX 後，render 跟 input hit-test 走的 transform 對 scrollFactor 處理不一致 → 按鈕「看得到按不到」/「按右下卻觸發」。要捲動內容就改 `worldLayer.x`，camera 自己保持 centerOn 不動。
+
+6. **`load.start()` 對空 queue 在 `create()` 裡會卡場景**：呼叫前先檢查 `this.load.list.size`，沒新檔別 start。已踩過（Boss 戰卡死）。
+
+7. **`tileSprite` 會重複貼**：要單張伸展不重複用 `add.image(...).setDisplaySize(w, h)`。
+
+8. **`#scene-bg cover` + canvas 內同圖 = 雙層接縫**：兩層獨立縮放永遠不對齊。擇一。
+
+9. **`getSourceImage().src` 可能回空字串**（HTMLImageElement 還沒 attach）。用靜態組合的 `/assets/...` URL 比較穩。
+
+> 自我檢查清單（寫新 Phaser scene 前過一遍）：
+> - [ ] `create()` 有 `setSceneBg(...)` 嗎？
+> - [ ] 有 `setupResponsiveCamera()` 嗎？UI 位置都用 `canvasToWorldX/Y(vp.safe... + N)` 嗎？
+> - [ ] 沒有 `setScrollFactor(0)`（除非 camera 真的會 scroll）嗎？
+> - [ ] 所有「懶建立」field 在 `init()` 重置了嗎？
+> - [ ] 動態 `load.image` 後有 `filecomplete-image-<key>` listener 嗎？
+> - [ ] 背景圖 `setDisplaySize` 兩維是同 scale 嗎？
 
 ## UI 慣例 — 按鈕
 
