@@ -230,6 +230,38 @@ Both share PostgreSQL but have separate `node_modules` and own `backend/.env` / 
 
 DB split (since 0.3.77): dev backend uses `edurpg_dev_local`, prod uses `edurpg_dev`. Migrations are applied to both via `prisma migrate deploy` during the respective restart.
 
+## 🟥 Bundled static assets in Phaser — 一律用相對路徑，不要 prefix `${API_BASE}`
+
+> 反覆風險：新場景的 `load.image / load.spritesheet / load.atlas` 用 `${API_BASE}/assets/...` 是 silent killer。
+> 一上 iOS（Capacitor WKWebView）就會半壞：`load.image` 跨 origin 還能容忍、`load.spritesheet` 走 fetch+canvas
+> 需要 CORS header（prod 沒設）→ 整批 spritesheet 安靜失敗，落回靜態圖。Web 端跑得好好的，iOS 才壞。
+
+**規則**：任何 `public/assets/...` 底下的檔案（會 bundle 進 IPA 的靜態檔），Phaser loader 都用**相對路徑**：
+
+```ts
+// ❌ 壞：iOS spritesheet 安靜失敗
+this.load.spritesheet(key, `${API_BASE}/assets/storymode/boss/anim/ch01_idle.png`, {...});
+
+// ✅ 對：web 解析成 https://edurpg.org/...、iOS 解析成 capacitor://localhost/... → 從 bundled IPA 讀
+this.load.spritesheet(key, `assets/storymode/boss/anim/ch01_idle.png`, {...});
+```
+
+`${API_BASE}` / `VITE_API_BASE` 只用在 `/api/...` 的 backend fetch，**不要碰 asset 路徑**。送 iOS / Android build 前 grep guard：
+```bash
+grep -rE 'API_BASE.*assets/|VITE_API_BASE.*assets/' src/  # 應該回 0
+```
+
+**iOS 本地測一律走 `tools/build_ios.sh`，不要直接 `npm run build`**：build_ios.sh 才會設 `VITE_API_BASE=https://edurpg.org` env、跑 `cap sync ios`、把版本號同步進 Xcode project。直接 `npm run build` 漏這條 → bundle 的 `/api/...` 變相對路徑 → iOS 開 App 登入就炸 `"The string did not match the expected pattern"`（fetch 拿到 SPA index.html、JSON.parse 失敗）。如果只是想試新 dist 不重 archive，最小組合：
+```bash
+VITE_API_BASE=https://edurpg.org VITE_BACKEND_URL=https://edurpg.org npm run build && npx cap sync ios
+```
+然後 Xcode ▶ Run。
+
+Root cause 完整紀錄：`docs/feedback/` 或 memory `feedback_storyart_capacitor_relative_paths`。
+踩過 commit：build 16 送審前夜 storyArt.ts 4 個 URL builder 全部寫成絕對 https。
+
+---
+
 ## Frontend → backend networking — never hardcode localhost
 
 All `fetch` calls **must** use a relative path so the Vite proxy can route them:
