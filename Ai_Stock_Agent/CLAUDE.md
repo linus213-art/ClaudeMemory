@@ -11,7 +11,7 @@
 - **Repo root**：`/Users/linus/Ai_Stock_Agent`
 - **Worktrees dir**（dispatcher 用）：`/Users/linus/Ai_Stock_Agent.worktrees/`（與 repo root 平行，非 `.worktrees`）
 - **Log dir**（launchd jobs 寫入）：`/Users/linus/Ai_Stock_Agent/logs/`
-  - `api.{out,err}.log`、`daily.{out,err}.log`、`weekly.{out,err}.log`、`kpi.{out,err}.log`、`healthcheck.{log,err.log}`、`datasync_{price,fundamental}.{out,err}.log`、`leading_indicator_{us,jp}.{out,err}.log`、`glossary_unverified.{out,err}.log`、`data_retention.{out,err}.log`、`indicators_pipeline.{out,err}.log`、`macro_indicators.{out,err}.log`、`market_breadth.{out,err}.log`、`market_breadth_margin.{out,err}.log`、`hedge_monitor_{preliminary,final}.{out,err}.log`、`nonfarm.{out,err}.log`、`capex.{out,err}.log`、`premarket_alert.{out,err}.log`、`dip_scan_intraday.{out,err}.log`、`data_gap_check.{out,err}.log`、`institutional_flow.{out,err}.log`、`position_overlay_eod.{out,err}.log`、`intraday_monitor.{out,err}.log`
+  - `api.{out,err}.log`、`daily.{out,err}.log`、`weekly.{out,err}.log`、`kpi.{out,err}.log`、`healthcheck.{log,err.log}`、`datasync_{price,price_tpex,fundamental}.{out,err}.log`、`leading_indicator_{us,jp}.{out,err}.log`、`glossary_unverified.{out,err}.log`、`data_retention.{out,err}.log`、`indicators_pipeline.{out,err}.log`、`macro_indicators.{out,err}.log`、`market_breadth.{out,err}.log`、`market_breadth_margin.{out,err}.log`、`hedge_monitor_{preliminary,final}.{out,err}.log`、`nonfarm.{out,err}.log`、`capex.{out,err}.log`、`premarket_alert.{out,err}.log`、`dip_scan_intraday.{out,err}.log`、`data_gap_check.{out,err}.log`、`institutional_flow.{out,err}.log`、`position_overlay_eod.{out,err}.log`、`intraday_monitor.{out,err}.log`
 - **Dispatcher 工作 log**：`tasks/logs/TASK-NNN.log`（每個任務一份，retain on failure）
 - **Backup dir**：`/Users/linus/Ai_Stock_Agent/backups/`（`AI_STOCK_AGENT_BACKUP_DIR` 可覆寫）
 - **Main branch**：`main`
@@ -63,7 +63,8 @@ cd /Users/linus/Ai_Stock_Agent
 | `kpi` ★§ | 每月 1 號 03:00 | `kpi_monthly` |
 | `healthcheck` ★§ | 每 300 秒 | `/healthz` probe + 自動 recover |
 | `data_retention` § | 每月 1 號 03:00 | 資料保留清理 |
-| `datasync_price` § | 週一～五 14:30 | 日線增量同步 |
+| `datasync_price` § | 週一～五 14:30 | 日線增量同步(**上市 TWSE**;TWSEAdapter `STOCK_DAY`) |
+| `datasync_price_tpex` § | 週一～五 14:40 | **上櫃 TPEX** 日線增量同步:FinMind `TaiwanStockPrice`(上市+上櫃通用)逐檔補 `price_daily`,因 TWSEAdapter 只含上市,上櫃股原本無價(overlay 損益/流動性護欄拿不到價)。跑 `ai_stock_agent.scripts.sync_price_tpex`(增量;首見 symbol 自動冷回補 420 天) |
 | `datasync_fundamental` § | 週六 07:00 | 季財報同步 |
 | `leading_indicator_us` § | 週日～五 06:00 | 美股領先指標 |
 | `leading_indicator_jp` § | 週一～五 | 日股領先指標 |
@@ -275,7 +276,7 @@ LLM keys 同樣放 .env：`ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、`GOOGLE_API_K
 | 看追蹤清單 | `GET /api/v1/watchlist/{user_id}` | 無 |
 | 移除追蹤 | `DELETE /api/v1/watchlist/{user_id}/{symbol}` | 無（symbol 不存在回 404） |
 | 批次分析整份清單 | `POST /api/v1/watchlist/{user_id}/scan` | 選填 `{"focus":[...],"language":"zh-TW"}` |
-| **個人持股 overlay**（即時） | `GET /api/v1/watchlist/{user_id}/overlay` | 無（TASK-178）。即時取現價(MVP=EOD/延遲)→ 177 算稅後 P&L → 組 overlay(含主力進出/籌碼趨勢/alert_level)。報價取不到 → 回 `user_position_overlay_snapshot` 快照 + 標 `stale=true` 不阻塞。共用 `analysis/position_overlay.py::build_overlay_item`(唯一 overlay service)；批次由 launchd `position_overlay_eod`(21:25)落地快照 |
+| **個人持股 overlay**（即時） | `GET /api/v1/watchlist/{user_id}/overlay` | 無（TASK-178）。取現價(`MarketHoursQuoteSource`:台北交易時段優先 TWSE MIS 公開即時(上市 tse_/上櫃 otc_,延遲數秒~分,best-effort),盤後/失敗退 `EodQuoteSource` 收盤價)→ 177 算稅後 P&L → 組 overlay(含主力進出/籌碼趨勢/alert_level/`day_change_pct` 供漲停跌停亮燈)。報價取不到 → 回 `user_position_overlay_snapshot` 快照 + 標 `stale=true` 不阻塞。共用 `analysis/position_overlay.py::build_overlay_item`(唯一 overlay service)；批次由 launchd `position_overlay_eod`(21:25)落地快照 |
 
 加入追蹤範例：
 ```bash

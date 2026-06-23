@@ -230,6 +230,41 @@ Both share PostgreSQL but have separate `node_modules` and own `backend/.env` / 
 
 DB split (since 0.3.77): dev backend uses `edurpg_dev_local`, prod uses `edurpg_dev`. Migrations are applied to both via `prisma migrate deploy` during the respective restart.
 
+## 補跑單字語音 cache（戰鬥 long-press TTS）
+
+完整背景看 [[feedback-battle-tts-no-duck]] 跟 [[project-tts-prewarm-coverage]]，這裡只記操作指令。
+
+**何時要補跑**：
+- 加了新題庫（新 lesson JSON、新 vocab_words 列）
+- 用戶回報某些字 tap 沒聲音
+- 想驗證 cache 完整度
+
+**怎麼跑**（在 repo root）：
+
+```bash
+# 1. 看現況：哪些 group 缺多少字
+node backend/scripts/prewarm_battle_word_tts.cjs --dry-run | head -8
+
+# 2. 補產：無參數 = 跑全集，idempotent 跳過已產的，只補 missing
+node backend/scripts/prewarm_battle_word_tts.cjs
+
+# 範圍限定（rarely needed; 全集 < 1 分鐘掃完缺的 50 字以內）
+node backend/scripts/prewarm_battle_word_tts.cjs --chapter-only 1
+node backend/scripts/prewarm_battle_word_tts.cjs --chapter-range 2-20
+node backend/scripts/prewarm_battle_word_tts.cjs --lesson-prefix en-toeic-,en-hanlin-j2-
+node backend/scripts/prewarm_battle_word_tts.cjs --daily-limit 16000   # 守 F0 日均額度
+```
+
+**輸出位置**：`public/assets/audio/tts/_word/{sha1(text)}.mp3` ← root public/，不是 backend/public/。Vite proxy + express.static 已 wire 好，prod web (`https://edurpg.org/assets/audio/tts/_word/...`) 直接可服。
+
+**前端怎麼吃**：`src/scenes/BattleScene.ts` `speakWordTts()` 自動算 sha1 + 抓 mp3。沒 cache → 安靜不出聲（**故意不 fallback 到 speechSynthesis**，因為 iOS 那玩意會 duck BGM）。
+
+**成本參考**：3,649 distinct words 全集 ≈ NT$12 一次性。Azure F0 免費 tier 500K chars/月，跑全集只用 ~25K chars = 5%，遠超必要安全範圍。
+
+**Snapshot 2026-06-23**：3,649 字 100% cached、43 MB on disk。下次只需要為新增題庫補產，幾分鐘搞定。
+
+---
+
 ## 🟥 Bundled static assets in Phaser — 一律用相對路徑，不要 prefix `${API_BASE}`
 
 > 反覆風險：新場景的 `load.image / load.spritesheet / load.atlas` 用 `${API_BASE}/assets/...` 是 silent killer。
