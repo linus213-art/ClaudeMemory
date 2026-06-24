@@ -649,4 +649,57 @@ memory `[[project_outlook_local_com_sync]]`、`[[project_microsoft_publisher_ver
   macOS .dmg **已簽章+公證**,別台 Mac 雙擊零 Gatekeeper 警告。
 
 改 `apps/web/app/outlook-sync/` 後要 `cd apps/web && pnpm build && pm2 restart cleo-web` 才生效(見 §2)。
-未來郵件功能範圍已定 = **只抓 metadata(寄件者/標題/時間)**,不抓內文、不自動回信。
+未來郵件功能範圍已定 = **只抓 metadata(寄件者/標題/時間)**,不抓內文、不自動回信(那是 OAuth Mail.Read 路徑;見 §16)。
+
+---
+
+## 16. 郵件轉寄分析 / 工作追蹤(CLE-389 收信 + CLE-594 triage,收信靠 Cloudflare Email Routing)
+
+> 使用者**主動把郵件轉寄**到自己的 Cleo 專屬地址 → Cleo **只分析轉進來的那幾封**(對話摘要 +
+> 抽待辦/截止日/後續)→ DM 一張 triage 卡(附「提醒/草擬」按鈕)。**不是讀整個信箱**。
+
+### 兩條路(別搞混)
+
+1. **轉寄(LIVE,推薦)**:使用者把信轉到 `<token>@in.edurpg.org`。**這條會讀內文做摘要/抽待辦。**
+2. **OAuth Mail.Read 綁定(目前關著)**:讓 Cleo 自動讀信箱。`Mail.Read` 在 code 裡**刻意關閉**
+   (見 [[project_microsoft_publisher_verification]])。釐清:**公司/學校帳號**才被 publisher
+   verification + 網管 admin consent 卡死;**個人 Hotmail/MSA 其實本人同意就能用**(只跳「未驗證
+   發行者」警告),目前用不了純粹是 code 開關關著。要開要動 OAuth scope(敏感),且範圍仍是
+   metadata-only。
+
+### ⚠️ 收信基礎設施(沒人會記得的部分,踩過才補的)
+
+整條 = **Outlook 轉寄 → Cloudflare Email Routing(catch-all)→ Worker `cleo-inbound-email` → 簽章
+POST → `/webhooks/email/inbound` → triage worker → DM**。
+
+- **收信網域**:`EMAIL_INBOUND_DOMAIN`(`.env`,= **`in.edurpg.org`**)。地址 = `<token>@<該網域>`,
+  網域在**顯示時**才套(改網域只要改 env + `restartCleo`,舊 token 自動換新網域顯示)。預設值
+  `in.cleo.app` 是佔位、**不可用**(無 MX、非我們的網域)。
+- **Cloudflare(帳號 `Linus213@gmail.com`,account `85c083c957468345d5eef7b32bc430b4`)**:
+  zone `edurpg.org` → Email → Email Routing → 已加 subdomain **`in.edurpg.org`** + **zone-wide
+  catch-all → Worker `cleo-inbound-email`**(Active)。
+  - ⚠️ catch-all 是**整個 zone 一條**(Cloudflare 模型),所以它也接住**非特定**的 `@edurpg.org`
+    信;apex 唯一的特定規則是 `support@edurpg.org → edurpgadmin@gmail.com`。**意思:除了 support@,
+    別期待還能在任意 `@edurpg.org` 地址收到正常信**(其餘都進 worker → Cleo 找不到 token 就丟棄)。
+    要保留某 apex 地址,得在 Email Routing 幫它加一條特定 rule(像 support@ 那樣)。
+- **Worker 原始碼在 repo**:`tools/cloudflare-email-worker/`(`worker.js` + `wrangler.toml`)。
+  部署 `wrangler deploy`。⚠️ Worker secret **`CLEO_EMAIL_SECRET` 必須 = cleo `.env` 的
+  `CLOUDFLARE_EMAIL_WEBHOOK_SECRET`**(兩邊不一致 → webhook 驗章失敗)。
+- **簽章契約**(`packages/providers/cleo_providers/email/cloudflare_signature.py`):
+  header `X-Cleo-Signature: t=<unix>,v1=<hex hmac_sha256(secret, f"{t}."+body)>`;body JSON
+  `{"raw_b64": <base64 raw MIME>, "to": [<addr>], "message_id": <id?>}` → POST
+  `https://cleo.edurpg.org/webhooks/email/inbound`。
+- **Server 端**:route `apps/api/cleo_api/routes/webhooks/email_inbound.py`(verifier 綁在
+  `main.py:_configure_cloudflare_email_signature`,secret 未設則回 503)→
+  `services/inbound_email_processor.py` → enqueue `cleo_worker.tasks.email_triage.run_email_triage`
+  → triage DM 由 `apps/bot/cleo_bot/cogs/email_triage_handlers.py` 送(CLE-594)。
+- **地址存法**:table `forwarding_addresses`(token 加密 `encrypted_token` + `token_lookup_hash`,
+  網域不存庫、顯示時才套 `EMAIL_INBOUND_DOMAIN`)。每 user 一個 active,可 rotate(有 grace)。
+
+### 怎麼拿到自己的轉寄地址 / 怎麼測
+
+- 登入 **https://onboard.edurpg.org** → 郵件轉寄設定頁(`/onboarding/email/manual-forward` 手動轉寄
+  最適合先測;`/forwarding-outlook` 教在 Outlook.com 設自動轉寄)→ 頁面顯示 `<token>@in.edurpg.org`。
+  (route `apps/api/cleo_api/routes/email/forwarding_setup.py`,session 認證。)
+- 測:把一封信轉到該地址 → 幾秒內收到 triage DM。沒收到先查 Worker log(Cloudflare)+
+  `api.log` 的 `/webhooks/email/inbound`(400=驗章失敗→兩邊 secret 不一致;503=cleo 沒設 secret)。

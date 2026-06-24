@@ -11,7 +11,7 @@
 - **Repo root**：`/Users/linus/Ai_Stock_Agent`
 - **Worktrees dir**（dispatcher 用）：`/Users/linus/Ai_Stock_Agent.worktrees/`（與 repo root 平行，非 `.worktrees`）
 - **Log dir**（launchd jobs 寫入）：`/Users/linus/Ai_Stock_Agent/logs/`
-  - `api.{out,err}.log`、`daily.{out,err}.log`、`weekly.{out,err}.log`、`kpi.{out,err}.log`、`healthcheck.{log,err.log}`、`datasync_{price,price_tpex,fundamental}.{out,err}.log`、`leading_indicator_{us,jp}.{out,err}.log`、`glossary_unverified.{out,err}.log`、`data_retention.{out,err}.log`、`indicators_pipeline.{out,err}.log`、`macro_indicators.{out,err}.log`、`market_breadth.{out,err}.log`、`market_breadth_margin.{out,err}.log`、`hedge_monitor_{preliminary,final}.{out,err}.log`、`nonfarm.{out,err}.log`、`capex.{out,err}.log`、`premarket_alert.{out,err}.log`、`dip_scan_intraday.{out,err}.log`、`data_gap_check.{out,err}.log`、`institutional_flow.{out,err}.log`、`position_overlay_eod.{out,err}.log`、`intraday_monitor.{out,err}.log`
+  - `api.{out,err}.log`、`daily.{out,err}.log`、`weekly.{out,err}.log`、`kpi.{out,err}.log`、`healthcheck.{log,err.log}`、`datasync_{price,price_tpex,fundamental}.{out,err}.log`、`leading_indicator_{us,jp}.{out,err}.log`、`glossary_unverified.{out,err}.log`、`data_retention.{out,err}.log`、`orphan_cleanup.{out,err}.log`、`indicators_pipeline.{out,err}.log`、`macro_indicators.{out,err}.log`、`market_breadth.{out,err}.log`、`market_breadth_margin.{out,err}.log`、`hedge_monitor_{preliminary,final}.{out,err}.log`、`nonfarm.{out,err}.log`、`capex.{out,err}.log`、`premarket_alert.{out,err}.log`、`dip_scan_intraday.{out,err}.log`、`data_gap_check.{out,err}.log`、`institutional_flow.{out,err}.log`、`position_overlay_eod.{out,err}.log`、`intraday_monitor.{out,err}.log`、`signal_collect.{out,err}.log`、`signal_universe.{out,err}.log`、`intraday_flow_eod.{out,err}.log`、`signal_scorecard_{monthly,weekly}.{out,err}.log`、`refresh_holdings_signals.{out,err}.log`
 - **Dispatcher 工作 log**：`tasks/logs/TASK-NNN.log`（每個任務一份，retain on failure）
 - **Backup dir**：`/Users/linus/Ai_Stock_Agent/backups/`（`AI_STOCK_AGENT_BACKUP_DIR` 可覆寫）
 - **Main branch**：`main`
@@ -30,9 +30,10 @@
 
 ```bash
 cd /Users/linus/Ai_Stock_Agent
-./scripts/restart_all.sh           # postgres → kickstart 5 個常駐/關鍵 job → API health probe
+./scripts/restart_all.sh           # postgres → kickstart 常駐 job(api+healthcheck;**預設不含**報表 job)→ API health probe
 ./scripts/restart_all.sh --no-db   # 只 bounce API，不動 postgres
 ./scripts/restart_all.sh --no-api  # 只 bounce postgres，不動 API
+./scripts/restart_all.sh --yes-reports  # 重啟時「也」kickstart daily/weekly/kpi → 立刻重發 Discord 報表。**預設不發**（restart 預設只 bounce api+healthcheck，不再 off-schedule 重發報表）；`--no-reports` 保留為 no-op
 ./scripts/restart_all.sh --health-only  # 只跑 `/healthz` probe，印 pid 表
 ```
 
@@ -55,6 +56,8 @@ cd /Users/linus/Ai_Stock_Agent
 
 #### 全部 launchd job 目錄（★ = restart_all 會 kickstart；§ = 已在 launchctl_manage JOBS）
 
+> **權威完整清單(34 個 job,含排程/module/用途、分類)見 [`docs/Scheduled_Jobs.md`](docs/Scheduled_Jobs.md)**(由 plist 直接解析,最準)。下表為常用摘要;新增 job 請同步更新該 doc。
+
 | Label | 排程 | 說明 |
 |---|---|---|
 | `api` ★§ | 常駐 | FastAPI / uvicorn，`KeepAlive=true` |
@@ -63,6 +66,7 @@ cd /Users/linus/Ai_Stock_Agent
 | `kpi` ★§ | 每月 1 號 03:00 | `kpi_monthly` |
 | `healthcheck` ★§ | 每 300 秒 | `/healthz` probe + 自動 recover |
 | `data_retention` § | 每月 1 號 03:00 | 資料保留清理 |
+| `orphan_cleanup` § | 每月 1 號 03:40 | 孤兒股清理(houseclean):`stock.source='onboarded'` 且不在任何 watchlist 且 `last_referenced_at` 超過 `ORPHAN_CLEANUP_DAYS`(預設 90)→ 刪該股 11 張表 + stock 列,發 admin。**seed universe 永不清**;既有股經 migration 0021 全標 seed(保守),只有此功能上線後新 onboard 的才可清。跑 `ai_stock_agent.jobs.orphan_cleanup`（`--days` 覆寫）|
 | `datasync_price` § | 週一～五 14:30 | 日線增量同步(**上市 TWSE**;TWSEAdapter `STOCK_DAY`) |
 | `datasync_price_tpex` § | 週一～五 14:40 | **上櫃 TPEX** 日線增量同步:FinMind `TaiwanStockPrice`(上市+上櫃通用)逐檔補 `price_daily`,因 TWSEAdapter 只含上市,上櫃股原本無價(overlay 損益/流動性護欄拿不到價)。跑 `ai_stock_agent.scripts.sync_price_tpex`(增量;首見 symbol 自動冷回補 420 天) |
 | `datasync_fundamental` § | 週六 07:00 | 季財報同步 |
@@ -83,7 +87,13 @@ cd /Users/linus/Ai_Stock_Agent
 | `data_gap_check` § | 週一～五 22:00 | 資料缺口巡檢:跑 `scripts/check_data_gaps_alert.sh` → `check_data_gaps.sh`,**只在 DB 新鮮度發現缺口(exit≠0)才發 admin(含 mention)**。22:00 因所有當日 TW 資料 job(含 market_breadth_margin 21:05、hedge_monitor_final 21:35)都跑完。log-mtime 段為資訊性、不觸發告警。手動巡檢直接 `./scripts/check_data_gaps.sh`;測試告警 `./scripts/check_data_gaps_alert.sh test` |
 | `institutional_flow` § | 週一～五 21:15 | 個股三大法人買賣超流向 job(TASK-164)。跑 `ai_stock_agent.jobs.institutional_flow`。21:15 因三大法人資料約 21:00 後才齊 |
 | `position_overlay_eod` § | 週一～五 21:25 | 個人持股 overlay 收盤批次(TASK-178)。跑 `ai_stock_agent.jobs.position_overlay_eod`,對所有持股 user×symbol 算 overlay(P&L + 籌碼趨勢)upsert `user_position_overlay_snapshot`,供下次開頁秒載 / 即時 endpoint 報價 stale 時降級回讀。排在 21:15 法人報表後才拿得到當日籌碼趨勢 |
-| `intraday_monitor` § | 常駐(盤中 09:00–13:30) | **第二層**「盤中大單即時偵測」常駐 daemon(M9 Phase C，TASK-174)。跑 `ai_stock_agent.jobs.intraday_monitor`，訂閱 watchlist∪當日成交值前 N 大 → 聚合/偵測大單(代理主力)→ 維護 realtime Top10 dashboard state(`intraday_dashboard_state`)供 179 讀。**需 Shioaji 金鑰才實際連線**(未設則無 tick)。`KeepAlive={SuccessfulExit=false}`:收盤 13:30 正常 `exit 0` 不重啟、只有 crash 才拉起。健檢走獨立 `scripts/healthcheck_intraday_monitor.sh`(只在台北交易時段要求 pid)，**不**混進 API 的 `healthcheck.sh` |
+| `signal_collect` § | 週一～五 22:10 | **Signal Scorecard** 每日訊號採集(M11，TASK-183)。跑 `ai_stock_agent.jobs.signal_collect`:讀當日各已落地源(訊號等級/法人原始/`inst_report` 精選/抄底/避險/macro 18 碼)→ 映射成 signed `signal_observation`(curated 源可擴張焦點宇宙、baseline 全市場源只對 active∪持股∪當日 candidates 寫、market 軸對 TWII)→ upsert → 對**所有未結案列** sweep 前向報酬回填。排在 institutional 21:15 / hedge final 21:35 / data_gap_check 22:00 之後。詳見 `docs/Signal_Scorecard_Spec.md`。**焦點宇宙維護(TASK-184)未上線前** active 集合讀 `signal_universe`(初期空),屬正常 interim |
+| `signal_scorecard_monthly` § | 每月 1 號 04:00 | **Signal Scorecard** 計分卡月報(M11，TASK-186)。跑 `ai_stock_agent.jobs.signal_scorecard_report --period-kind month`:對上月各 scope×source×horizon 算命中率/IC/累積報酬 → upsert `signal_scorecard` → 發 report webhook 文字排行榜。折線圖由 dashboard 讀 `/api/v1/scorecard` series 自畫(chart.js,不產 server PNG) |
+| `signal_scorecard_weekly` § | 週六 09:30 | **Signal Scorecard** 計分卡週報(M11，TASK-186)。同上,`--period-kind week`,對上一 ISO 週計分 |
+| `refresh_holdings_signals` § | 週一～五 22:50 | **Signal Scorecard** 持股資料自動回補(M11)。跑 `ai_stock_agent.jobs.refresh_holdings_signals`:解決「使用者持股(尤其法人同步 universe 未涵蓋的 off-universe 股如宏碁2353/正文4906)在計分卡缺資料」。① 對每檔持股回補 `stock_institutional_daily`(**新/稀疏持股(法人<60列)→深度420天**全歷史、已覆蓋→增量45天)② 重跑 signal observation backfill **限持股 symbol**,補上 inst_*/daily_signal 觀測。idempotent。排在 institutional 21:15 後。手動:`python -m ai_stock_agent.scripts.backfill_holdings_institutional` + `... backfill_signal_observations --symbols 2353,4906` |
+| `intraday_flow_eod` § | 週一～五 13:35 | **Signal Scorecard** 盤中大單收盤落地(M11，TASK-185)。跑 `ai_stock_agent.jobs.intraday_flow_eod`:讀 `intraday_dashboard_state` singleton(收盤後仍存最後狀態)拆 per-symbol → upsert `intraday_flow_daily`,供 signal collector 採 `intraday_flow` 源。**不碰** intraday_monitor daemon;singleton 為當日(generated_at≠當日交易日)才落地,否則不寫(無 Shioaji feed 時正常空) |
+| `signal_universe` § | 週一～五 22:30 | **Signal Scorecard** 焦點宇宙維護(M11，TASK-184)。跑 `ai_stock_agent.jobs.signal_universe`,排在 signal_collect 22:10 後:重算持股、累計 curated 點名熱度(EWMA)→ 套 TTL(10 交易日無 curated 點名)/ 容量(焦點 K=100,持股不計)下車 + re-activation,upsert `signal_universe`。**軟下車**(active=false)只擋 baseline collector 開新單,在途 observation 照回填。詳見 `docs/Signal_Scorecard_Spec.md` §6 |
+| `intraday_monitor` § | 常駐(盤中 09:00–13:30) | **第二層**「盤中大單即時偵測」常駐 daemon(M9 Phase C，TASK-174)。跑 `ai_stock_agent.jobs.intraday_monitor`，訂閱 watchlist∪當日成交值前 N 大 → 聚合/偵測大單(代理主力)→ 維護 realtime Top10 dashboard state(`intraday_dashboard_state`)供 179 讀。**需 Shioaji 金鑰才實際連線**(未設則無 tick)。**用模擬模式即可**:`SHIOAJI_SIMULATION`(預設 `true`)→ 模擬模式仍給**真實盤中行情**(已驗證 snapshot/tick 為真),**不需正式/下單權限**,故只訂閱行情的本 daemon 用模擬即可、**免等永豐正式 API 審核**(正式只 gate `place_order`;正式開通後設 `false` 對行情無差異)。**每日 09:00 由 plist `StartCalendarInterval` 啟動**(`RunAtLoad` 只在載入跑一次,非交易時段 `exit 0` 後不被 KeepAlive 拉起,故需開盤觸發器)。連線/訂閱失敗 → clear log + 乾淨退出(started=False/exit 0),不 crash-loop。`KeepAlive={SuccessfulExit=false}`:收盤 13:30 正常 `exit 0` 不重啟、只有 crash 才拉起。健檢走獨立 `scripts/healthcheck_intraday_monitor.sh`(只在台北交易時段要求 pid)，**不**混進 API 的 `healthcheck.sh` |
 
 > 註：原「既有漂移」三個 job（`macro_indicators`、`indicators_pipeline`、`policy_calendar`）已於 2026-06-09 全部納管進 JOBS 並安裝，漂移清零。
 > 歷史教訓（2026-06-09）：`macro_indicators`、`indicators_pipeline`、`policy_calendar` 三個都曾被以為「有 plist 且實際在跑」，實際上**從未安裝**(無 `/Library/LaunchDaemons/` plist、無 log、不在 JOBS)。macro 與 indicators_pipeline 因此資料自 ~2026-05-27 靜默凍結兩週(macro 靠 job 內 staleness watchdog 在 6/9 發 admin 抓到、pipeline 靠 `scripts/check_data_gaps.sh` 掃出，皆已手動回補)；policy_calendar 因是 seed-based 非即時來源故無實際漏資料。診斷漂移類問題：**永遠用 log mtime + DB 新鮮度驗證(`./scripts/check_data_gaps.sh`)，不要信「應該在跑」**。
@@ -94,14 +104,14 @@ cd /Users/linus/Ai_Stock_Agent
 
 ```bash
 # 反向：先 jobs 後 postgres
-./scripts/launchctl_manage.sh unload    # bootout 所有 25 個 aistockagent.* jobs
+./scripts/launchctl_manage.sh unload    # bootout 全部 aistockagent.* jobs(見 docs/Scheduled_Jobs.md)
 sudo launchctl bootout system/homebrew.mxcl.postgresql@16   # 最後才停 postgres（一般情況不要停）
 ```
 
 ### 從零安裝 / 重新載入 plist
 
 ```bash
-./scripts/launchctl_manage.sh load      # 把 launchctl_manage.sh JOBS 清單(25 個)的 plist 安裝到 /Library/LaunchDaemons/ 並 bootstrap
+./scripts/launchctl_manage.sh load      # 把 launchctl_manage.sh JOBS 清單(全部,見 docs/Scheduled_Jobs.md)的 plist 安裝到 /Library/LaunchDaemons/ 並 bootstrap
 ./scripts/launchctl_manage.sh status    # 印每個 job 的 pid + last_exit_status
 ./scripts/launchctl_manage.sh restart   # bootout + bootstrap 每個 job（churn 比 kickstart 大）
 ```
@@ -146,7 +156,25 @@ sudo install -m 0440 -o root -g wheel \
   /etc/sudoers.d/aistockagent-recover
 sudo visudo -c -f /etc/sudoers.d/aistockagent-recover
 ```
-這份 sudoers 只授權 4 條 launchctl 指令對單一 daemon label，不能被擴用。
+這份 sudoers 只授權 4 條 launchctl 指令對單一 daemon label（api），不能被擴用。
+
+#### 讓 Code / 自動化能非互動跑 restart_all.sh（第二份 sudoers）
+
+`scripts/sudoers.d/aistockagent-restart` 是**擴充版** NOPASSWD：授權 `restart_all.sh` 實際會跑的
+launchctl print/kickstart/bootstrap + postgres log tail，綁定 5 個 aistockagent.* job + postgres
+label。裝了之後 `restart_all.sh` 會**完全非互動**執行（`require_sudo` 用 healthcheck print 探測到
+NOPASSWD 就跳過互動 prime），所以 **Code 能自動重啟服務**（含改 dashboard 後 bounce api）。
+
+```bash
+sudo install -m 0440 -o root -g wheel \
+  /Users/linus/Ai_Stock_Agent/scripts/sudoers.d/aistockagent-restart \
+  /etc/sudoers.d/aistockagent-restart
+sudo visudo -c -f /etc/sudoers.d/aistockagent-restart
+```
+
+未裝時 `restart_all.sh` 退回互動 sudo（prompt 一次），行為與舊版相同。另注:**只有 api label**
+另有 `aistockagent-recover`（healthcheck 自動復原用），所以即使沒裝 restart fragment，Code 仍能
+單獨 `sudo launchctl kickstart -k system/com.linus.aistockagent.api` 重啟 api（=重載 dashboard）。
 
 ### Postgres daemon 修補
 
@@ -321,6 +349,33 @@ curl "http://192.168.11.99:8080/api/v1/institutional/report/latest" \
 - **coverage gate**:當日法人列數 / 有量股數 < `INSTFLOW_MIN_COVERAGE`(預設 0.7)時,job 判定資料不完整 → **不發 report、改發 admin 告警**,該日 `latest` 仍可能查到上一個完整日。
 - 命名:對外顯示用「最新個股法人資金流向報表 / Latest Institutional Flow Report」;與第二層的「盤中大單」明確區隔。
 
+### 訊號計分卡 API（Signal Scorecard，M11 / TASK-186，dashboard client 呼叫）
+
+實作在 `ai_stock_agent/api/scorecard.py`,router prefix `/api/v1/scorecard`,**唯讀**。
+資料由排程 job `signal_scorecard_{monthly,weekly}`(月初 04:00 / 週六 09:30)算好各 source 的
+命中率/IC/累積報酬序列落地到 `signal_scorecard`,本 API **只查詢、不觸發計算**。
+**所有 endpoint 都要 `Authorization: Bearer <AI_STOCK_AGENT_API_TOKEN>`**(與 watchlist 同 token,**不是** admin token)。
+完整設計見 `docs/Signal_Scorecard_Spec.md`。
+
+| 動作 | Method + Path | 無資料行為 |
+|---|---|---|
+| 看**最新一期**計分卡 | `GET /api/v1/scorecard/latest?period_kind=month\|week` | **200 + 空殼**(`period_label=null`, `rows=[]`) |
+| 看**單一 source 跨期趨勢** | `GET /api/v1/scorecard/source/{source}?period_kind=month&horizon=20&limit=24` | **200 + 空清單** |
+
+```bash
+curl "http://192.168.11.99:8080/api/v1/scorecard/latest?period_kind=month" \
+  -H "Authorization: Bearer $AI_STOCK_AGENT_API_TOKEN"
+```
+
+回傳 `data` 內含 `period_kind`/`period_label`/`rows[]`;每個 row:`scope`(stock/market)、`source`、
+`horizon`(1/5/20)、`sample_size`、`directional_hit_rate`(命中率%)、`information_coef`(IC,score 與實際報酬
+等級相關)、`avg_return`、`strategy_series`/`cum_return_series`(折線圖序列 `[[date, cum_return%], ...]`)。
+- **折線圖 client 自畫**:本 API 回 series 陣列,dashboard 用 vendored chart.js 畫(不產 server PNG)。
+- **Dashboard 第二頁**:`GET /dashboard/scorecard`(HTML shell,token 由前端輸入)= 個股/大盤兩軸的命中率+IC 排行表
+  + 多源累積報酬折線圖。主 dashboard `/dashboard/intraday` 頂部有導覽連結。**改 HTML/route 後需 restart api 才生效**(烤在記憶體)。
+- 「哪種分析最貼近實際漲跌」= 多種訊號源(封老師五維/法人原始+精選/訊號等級/盤中大單/美日先行/macro 18 碼/週報觀察/抄底/**阮慕驊避險模型:綜合 `hedge_risk` + 6 子項 `hedge_turnover/leverage/giant/ma/external/fundamental`(讀 `market_risk_snapshot` 子分,各對 TWII 計分)**/**全球風險溫度判讀 global_risk(macro 聚合)**/**盤前開盤衝擊 premarket_alert**)
+  統一進 `signal_observation` 台帳對前向報酬計分。個股軸對自身、大盤軸對 TWII;每日 `signal_collect`(22:10)採集、`signal_universe`(22:30)維護焦點宇宙。
+
 ### 第二層：盤中大單即時偵測（Intraday Monitor，M9 / TASK-174 上線）
 
 > **這是「第二層」**,與「第一層」（盤後個股法人資金流向報表,見上節）**正交**:
@@ -405,7 +460,7 @@ curl http://127.0.0.1:8080/healthz
 | 腳本 | 用途 |
 |---|---|
 | `scripts/restart_all.sh` | postgres + 全 jobs 一鍵重啟（見 §2） |
-| `scripts/launchctl_manage.sh {load,unload,restart,status}` | 安裝 / 拔除 / 查詢 25 個 launchd jobs |
+| `scripts/launchctl_manage.sh {load,unload,restart,status}` | 安裝 / 拔除 / 查詢全部 launchd jobs(見 docs/Scheduled_Jobs.md) |
 | `scripts/healthcheck.sh` | 手動觸發 health probe（launchd 每 5 分鐘也跑一次） |
 | `scripts/backup_helper.sh` | `pg_dump --format=custom` → gzip → age 加密 → 保留 7 份。**必須**設 `BACKUP_PASSPHRASE` 才會跑。 |
 | `scripts/daily_status.sh` | 掃 healthcheck.log + `*.err.log`，組 JSON 餵 `ai_stock_agent.jobs.daily_status` 送 Discord report |
@@ -432,6 +487,10 @@ curl http://127.0.0.1:8080/healthz
 - `python -m ai_stock_agent.scripts.import_stock_universe` — 灌個股清單
 - `python -m ai_stock_agent.scripts.sync_price_daily` / `sync_fundamental` — 手動補日線 / 基本面
 - `python -m ai_stock_agent.jobs.institutional_flow` — 個股三大法人買賣超流向 job（TASK-164）。手動觸發；也有 launchd `institutional_flow`（週一～五 21:15）自動跑
+- `python -m ai_stock_agent.scripts.backfill_institutional_report [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD]` — Signal Scorecard:回填個股法人精選報表(institutional_flow_report_daily)歷史。偵測純函式 + point-in-time,重用 detect_institutional_flow + build_institutional_flow_report + _report_to_payload,讀已存的 stock_institutional_daily(282天)+ price_daily volume 逐日重放 Top10,**不打 FinMind/不呼 DeepSeek/不發 Discord**。回填後重跑 backfill_signal_observations 讓 inst_report 有數月歷史,可和原始 inst_foreign/trust/dealer 並排比 IC。idempotent
+- `python -m ai_stock_agent.scripts.backfill_market_risk [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD]` — Signal Scorecard/HedgeMonitor:回填阮慕驊避險模型分數(market_risk_snapshot:綜合 risk_score + 6 子分)歷史。逐交易日重用 hedge_monitor 的 _assemble(point-in-time 收集 TWII/成交總值/融資/權值股/外圍指數/capex 等已回補的上游)+ 純函式評分 → upsert,**只算分不發 Discord/不觸發抄底**。早期資料未滿時 coverage 偏低屬正常。回填後重跑 backfill_signal_observations 讓阮慕驊 6 子分+綜合有數月歷史、20 日 horizon 可算 IC。idempotent
+- `python -m ai_stock_agent.scripts.backfill_macro_history [--days 420] [--codes ^VIX,^SOX]` — Signal Scorecard:用 yfinance 回填 macro 歷史日線(VIX/SOX/DXY/黃金/WTI/US10Y/人民幣/Nasdaq/日經/KOSPI)進 `macro_indicator_snapshot`。macro_indicators job 約 2026-05 才開始寫,計分卡這些大盤訊號只 ~1 月算不出 IC;回填後重跑 `backfill_signal_observations` 即對 TWII(已有 2025-01 起歷史)有數月樣本+IC。idempotent
+- `python -m ai_stock_agent.scripts.backfill_signal_observations [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD] [--sources daily_signal,macro_vix] [--symbols 2353,4906]` — Signal Scorecard P4（TASK-187）：把既有歷史（daily_signals/法人/抄底/避險/macro/inst_report/五維/週報觀察）重放成 `signal_observation`，**共用 live collector 的 mapper**（不另寫映射），baseline 源照 trailing-window candidate 分層（與 live 可比），跑完做全量前向報酬回填（無 as_of cap）。idempotent。**新裝後跑一次**讓計分卡上線即有數月樣本。`--symbols` 限定持股定向回補
 - `python -m ai_stock_agent.scripts.backfill_monthly_revenue [--symbols ...] [--start-year 2010]` — HedgeMonitor P1c：FinMind 月營收全期間回補進 `monthly_revenue`（running-max `is_ath` + `available_at`）。首次種子用 `--start-year 2010`，之後每月再跑增量補新月並刷新近月 `is_ath`
 - `python -m ai_stock_agent.scripts.sync_capex [--symbols 2330 2454 2317] [--start-year 2018]` — HedgeMonitor I-4：FinMind 現金流 PP&E → `fundamental.capex_outflow`。**FinMind 給的是 YTD 累計值**，腳本會去累計成單季（`analysis/capex.py`），QoQ/YoY 才有意義。也有 launchd `capex`（週六）自動跑
 - `python -m ai_stock_agent.scripts.backfill_market_breadth [--start-date 2025-04-15]` — HedgeMonitor：回補 `TWII`/`TW_TURNOVER`（FMTQIK 月迴圈）+ `TW_MARGIN_BALANCE`（FinMind 範圍）歷史。**新裝後跑一次**讓 `leverage`/`ma` 子分立刻有料（均線要 240 天歷史），coverage 一次到 100%，不用等好幾週累積。預設回補 420 天
