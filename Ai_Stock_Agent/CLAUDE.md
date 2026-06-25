@@ -56,7 +56,7 @@ cd /Users/linus/Ai_Stock_Agent
 
 #### 全部 launchd job 目錄（★ = restart_all 會 kickstart；§ = 已在 launchctl_manage JOBS）
 
-> **權威完整清單(34 個 job,含排程/module/用途、分類)見 [`docs/Scheduled_Jobs.md`](docs/Scheduled_Jobs.md)**(由 plist 直接解析,最準)。下表為常用摘要;新增 job 請同步更新該 doc。
+> **權威完整清單(39 個 job,含排程/module/用途、分類)見 [`docs/Scheduled_Jobs.md`](docs/Scheduled_Jobs.md)**(由 plist 直接解析,最準)。下表為常用摘要;新增 job 請同步更新該 doc。
 
 | Label | 排程 | 說明 |
 |---|---|---|

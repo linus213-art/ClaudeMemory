@@ -529,3 +529,4 @@ this.worldLayer.x = -target;   // scroll = -worldLayer.x；node hit areas 跟著
 - `BOT_HANDOFF.md` / `PROD_DEPLOY_QUEUE.md` — deploy-bot protocol.
 - `PROJECT_STRUCTURE.md` — Phaser scene/system reference.
 - `CHANGELOG.md` — version history (currently 0.3.83).
+- `docs/ISSUE_HISTORY.md` — 問題情境 × 根因 × 解法速查。**遇到 CI / 測試 / dispatcher / 部署 / 環境的非顯而易見卡關，先 `grep -i "關鍵字" docs/ISSUE_HISTORY.md`** 找前例借鏡，再開始 debug；解掉新問題後追加一條。（與 `docs/feedback/` 分工：feedback/ 是 Phaser/UI/美術 bug pattern，本檔是更廣的部署/CI/流程歷史。）

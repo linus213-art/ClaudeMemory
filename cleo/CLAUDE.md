@@ -703,3 +703,23 @@ POST → `/webhooks/email/inbound` → triage worker → DM**。
   (route `apps/api/cleo_api/routes/email/forwarding_setup.py`,session 認證。)
 - 測:把一封信轉到該地址 → 幾秒內收到 triage DM。沒收到先查 Worker log(Cloudflare)+
   `api.log` 的 `/webhooks/email/inbound`(400=驗章失敗→兩邊 secret 不一致;503=cleo 沒設 secret)。
+
+---
+
+## 17. 事故誌 / debugging 參考 → `docs/issue-history.md`(先查再 debug)
+
+踩過的 production 事故(情境 → 根因 → 修法 → **可重用判斷規則**)集中在 **`docs/issue-history.md`**,
+含一張「症狀 → 規則」速查表。**debug 任何「沒收到 / 靜默壞掉」類問題前先查那份**,別把同一條路重走。
+
+最重要的幾條鐵則(細節見該檔):
+- **「提醒 fire 了 ≠ 使用者收到」**:投遞鏈
+  `fire-loop → render(LLM) → /internal/send-reminder-dm(202=enqueue)→ outbox → bot drain →
+  dispatch → user.send`,任一環會靜默斷。追到 bot 端 dispatch 結果(`send_text_empty` /
+  `quiet_hours_deferred`)。
+- **liveness 全綠 ≠ 功能正常**:PID/HTTP200/Redis/PID 會騙人;功能性監控(心跳 staleness、逾期 fire、
+  log error)才抓得到「活著但卡死」。靠 CLE-661 哨兵。
+- **worker raw asyncpg conn**:會 idle 被關要重連 + keepalive;`session.execute(text())` 的 repo 要
+  `AsyncSession`,別注入 raw conn(`TextClause has no len()`)。
+- 日期參數傳 `date` 物件(非 `.isoformat()` 字串);users 讀 `effective_plan`(非 `plan_id`);
+  出門/行事曆提醒 `quiet_hours_policy="bypass"`。
+- 新事故請按該檔格式追加,維持「給未來 dispatcher / Claude Code 參考」的摘要密度。
