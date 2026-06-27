@@ -373,8 +373,9 @@ curl "http://192.168.11.99:8080/api/v1/scorecard/latest?period_kind=month" \
 - **折線圖 client 自畫**:本 API 回 series 陣列,dashboard 用 vendored chart.js 畫(不產 server PNG)。
 - **Dashboard 第二頁**:`GET /dashboard/scorecard`(HTML shell,token 由前端輸入)= 個股/大盤兩軸的命中率+IC 排行表
   + 多源累積報酬折線圖。主 dashboard `/dashboard/intraday` 頂部有導覽連結。**改 HTML/route 後需 restart api 才生效**(烤在記憶體)。
-- 「哪種分析最貼近實際漲跌」= 多種訊號源(封老師五維/法人原始+精選/訊號等級/盤中大單/美日先行/macro 18 碼/週報觀察/抄底/**阮慕驊避險模型:綜合 `hedge_risk` + 6 子項 `hedge_turnover/leverage/giant/ma/external/fundamental`(讀 `market_risk_snapshot` 子分,各對 TWII 計分)**/**全球風險溫度判讀 global_risk(macro 聚合)**/**盤前開盤衝擊 premarket_alert**)
+- 「哪種分析最貼近實際漲跌」= 多種訊號源(封老師五維/法人原始+精選/訊號等級/盤中大單/美日先行/macro 18 碼/週報觀察/抄底/**阮慕驊避險模型:綜合 `hedge_risk` + 6 子項 `hedge_turnover/leverage/giant/ma/external/fundamental`(讀 `market_risk_snapshot` 子分,各對 TWII 計分)**/**全球風險溫度判讀 global_risk(macro 聚合)**/**盤前開盤衝擊 premarket_alert**/**財經節目分析師判讀:個股綜合 `analyst_view` + 各面向 `analyst_technical/chip/fundamental/theme/macro`(由 `analyst_method` 的 category 拆,逐股逐日對前向報酬算 IC →「哪一類分析師理由最準」)+ 大盤 `analyst_market`(對 TWII)**)
   統一進 `signal_observation` 台帳對前向報酬計分。個股軸對自身、大盤軸對 TWII;每日 `signal_collect`(22:10)採集、`signal_universe`(22:30)維護焦點宇宙。
+  - **分析師訊號接法(2026-06-28)**:`analyst_method`(DeepSeek 已結構化抽 category+claim+direction)→ `map_analyst`/`map_analyst_market`(`analysis/signal_collectors.py`,curated)→ 進台帳。`sim_plan` 波段 `_swing_signals` **只吃 `analyst_view`**(一檔一個分析師共識訊號),per-category 5 源是「scorecard-only」(同批點名衍生,餵進去會在 equal-weight `signal_component` 重複計權),由 `_ANALYST_SCORECARD_ONLY` 在 SQL 排除。歷史回放:`backfill_signal_observations --sources analyst_view,...`。dashboard `/dashboard/analyst` 每檔分行顯示 `[category] 具體claim`(站上季線/營收創高/毛利率53%→66%…)+ 大盤 `market_methods`。
 
 ### 第二層：盤中大單即時偵測（Intraday Monitor，M9 / TASK-174 上線）
 

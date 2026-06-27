@@ -8,6 +8,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 > 對使用者的所有回覆（說明、摘要、提問、進度回報）一律用繁體中文。**不要中途自行切換成英文。**
 > 程式碼、commit message、檔名、API 等技術名詞可保留原文（英文），但包覆它們的敘述文字要是中文。
 
+## 完工自我審查規則（每次任務做完務必執行）
+
+> **每完成一項工作，交付前一定要用「資深工程師 code review」的角度，自己再審一遍有沒有問題或遺漏。**
+> 不要做完就直接回報「完成」——先當自己的 reviewer，把以下都過一遍，發現缺口就補掉（或如實列出），再給使用者結論。
+
+審查清單（依任務性質取用）：
+- **需求對齊**：把使用者這次（含過程中追加 / 修正）的每一條要求列出來，逐條對照「是否真的做到、做的跟舉例一致」。
+  特別注意自己**擅自簡化或偏離使用者明確舉例**的地方（例：使用者說 A，我做了相近的 B）。
+- **完整性盤點**：同類的東西有沒有漏接？（例：要接語音的「所有」廣播句、要改的「所有」呼叫點、要改的「所有」locale）
+  用 grep 把同類呼叫點全列出來，逐一確認每個都處理或刻意略過（並說明為何略過）。
+- **正確性 / 邊界**：null / 空字串 / 找不到 / 跨裝置 / 多人 / iOS 等邊界；前後端共用邏輯有沒有保持同步。
+- **驗證**：typecheck（前端 + backend 各自）綠；該 build 的有 build（改 `src/` → `--build-all`）；產出物實際可服（curl 200 / 看圖）。
+- **副作用**：有沒有破壞既有行為、留下無用檔 / dead code、commit 了不該 commit 的東西。
+- **誠實回報**：跑失敗就說失敗附輸出；刻意沒做的要明講原因；不要把「沒驗證」講成「已完成」。
+
+做完 review 後，在給使用者的結論裡**主動說明**：完成了什麼、刻意保留沒做的（含原因）、還有什麼已知缺口或後續建議。
+使用者若問「有漏掉沒做的嗎」，這份審查就是答案來源。
+
 ## macOS 本機環境（最常被問,先看這段）
 
 > 這個 repo 同時跑 Windows 工作站(`E:\AI_Workbench_Data\edurpg`)和 macOS(`/Users/linus/edurpg`)。
@@ -107,6 +125,27 @@ npx prisma generate
 npx prisma migrate deploy          # PROD migration
 npx prisma migrate dev --name xxx  # 開新 migration
 ```
+
+### 5. 從 Windows PC 預覽 Mac 上的 `docs/` 靜態頁(如 `spell-fx-bake.html`)
+
+**症狀**:Windows PC 開 `http://192.168.11.99:8777/docs/spell-fx-bake.html` 連不上(connection refused / 逾時)。
+
+**先別懷疑網路 / IP**。`192.168.11.99` 就是這台 Mac 的 LAN IP(`ipconfig getifaddr en0`),八成是 **Mac 上根本沒有東西在監聽 8777**。先在 Mac 本機驗:
+```bash
+lsof -nP -iTCP:8777                                   # 沒輸出 = 沒人 listen
+curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8777/docs/spell-fx-bake.html  # 000 = refused
+```
+
+**修法**:在 repo root 起一個**綁所有介面**(`0.0.0.0`,不是預設只綁 loopback)的靜態檔伺服器,Windows PC 才連得到:
+```bash
+python3 -m http.server 8777 --bind 0.0.0.0 --directory /Users/linus/edurpg
+# → http://192.168.11.99:8777/docs/spell-fx-bake.html （?v=NN 是 cache-buster，隨意改）
+```
+這只是 **LAN 內網**存取(同網段才連得到),不是把服務暴露到公網,**不適用** cloudflared / 公網 tunnel 那條「需本人同意」規則。
+
+**仍連不上的話**:八成是 **macOS 防火牆**擋了 Python 的傳入連線 → 系統設定 → 網路 → 防火牆,允許 `python3` 或暫時關閉測試。(若本機 `curl 127.0.0.1:8777` 已 200、但 Windows 連不到,基本就是防火牆。)
+
+> ⚠️ `python3 -m http.server` 跑前景 / 背景都行,但**它跟著那個 shell / session 走,session 一停就停**。要長駐改包成 user LaunchAgent(`RunAtLoad`/`KeepAlive`,免 sudo)。
 
 ---
 
