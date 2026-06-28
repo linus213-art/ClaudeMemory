@@ -561,6 +561,31 @@ this.worldLayer.x = -target;   // scroll = -worldLayer.x；node hit areas 跟著
 - **圓角外框**：所有按鈕一律做成圓角，不要使用直角外框。Phaser 用 `graphics.fillRoundedRect` / `strokeRoundedRect`，React/Tailwind 用 `rounded-*` class。
 - 不要使用我Chrome裡面Oracle資料夾的bookmark裡面的URL。
 - 使用chrome瀏覽器的時候, 請使用linus94213@gmail.com這個account。
+
+## 背包 / 物品欄 — 全遊戲只有一個共用元件（別再做第二個）
+
+> 反覆踩雷：背包在遊戲裡有多個入口（主畫面、字靈防線選單、戰後結算…），曾經各自做了一份物品欄 UI，
+> 導致同一件事維護多份、改 A 漏 B（例：新加的防具/飾品 gear 只在其中一份顯示，另一份看不到）。
+
+**規則：所有「背包 / 物品欄」一律用唯一共用元件 `src/ui/LexiconInventoryOverlay.tsx`，不要再新增第二份背包 UI。**
+
+- 它自含：開啟時 `fetchEquipment` + `fetchCharEquipment` + 商店 HP 藥水(`/api/save/all`)，顯示
+  **消耗品 + 武器 + 副手 + 戒指(charEquipment) + 防具/飾品 gear**，6 級稀有度(史詩彩虹)，穿脫走各自 API，
+  同步 `playerManager.syncEquipment(...)`（含 gear）。props 只有 `{ onClose }`。
+- 目前三個入口都已掛它：`TitleScene.openBackpackOverlay()`（主畫面）、`LexiconMenu`（字靈選單）、
+  `LexiconSettlementOverlay`（戰後結算）。**新功能要動背包 → 改這一個檔，不要 copy 一份新的。**
+- **掛載位置**：一定掛在 **viewport 層**（`position:fixed` 直接在最外層），**不要**掛進有 `transform: scale()`
+  的縮放容器（如 LexiconMenu 的 1280×720 stage）內——否則元件內的 `vw` 響應式單位算的是 viewport、容器卻是
+  stage 座標，欄數會錯亂。範例：`LexiconMenu` 把它放在 stage `</div>` 之外、root 之內。
+- **格數別設上限**：grid 是 `auto-fill` 響應式欄 + 上下捲，要顯示「全部」物品。曾誤設 `cellCount = min(30,…)`，
+  武器+副手就 >30，把後面的 gear 整批擠掉沒渲染 → 一律 `Math.max(18, ceil(n/6)*6)`，不要封頂。
+
+### 待清理（多餘 code，找機會拿掉）
+- ~~`LexiconMenu` 內自帶的舊物品欄（state/builders/handlers/INV_ITEMS/RARITY_META）~~ → 已於 2026-06-28 移除，改用共用元件。
+- ~~`LexiconInventoryOverlay` 的 `INV_ITEMS` 假佔位資料 + `void INV_ITEMS`~~ → 已移除。
+- 穿脫的「slot/資格」判斷在 `LexiconInventoryOverlay` 與 `PlayerInfoPanel`(紙娃娃) 各有一份（兩者都呼叫
+  `equipGear/equipWeapon/equipOffhand`）。兩個是不同 UI（清單 vs 紙娃娃）可並存，但 slot 解析邏輯日後可抽共用 helper。
+
 ## Reference docs in this repo
 
 - `OPERATIONS.md` — full restart / deploy / recovery runbook.
@@ -569,3 +594,4 @@ this.worldLayer.x = -target;   // scroll = -worldLayer.x；node hit areas 跟著
 - `PROJECT_STRUCTURE.md` — Phaser scene/system reference.
 - `CHANGELOG.md` — version history (currently 0.3.83).
 - `docs/ISSUE_HISTORY.md` — 問題情境 × 根因 × 解法速查。**遇到 CI / 測試 / dispatcher / 部署 / 環境的非顯而易見卡關，先 `grep -i "關鍵字" docs/ISSUE_HISTORY.md`** 找前例借鏡，再開始 debug；解掉新問題後追加一條。（與 `docs/feedback/` 分工：feedback/ 是 Phaser/UI/美術 bug pattern，本檔是更廣的部署/CI/流程歷史。）
+- `docs/appstore/SUBMISSION_LOG.md` — **App Store iOS 上架提交歷史 + Review 退件問題速查 + 上架前自查清單**。送審 / 改版上架 / 被 review 退件重送之前，**先讀這份逐條自查**（IAP 設定、screenshot 尺寸、build 換法、版本號、提交入口、Resolution Center 回覆等踩過的坑都在裡面）；每次送審或被退後**持續追加更新**。同目錄另有 `reject-2026-06-24-reply.md`(退件英文回覆草稿)、`iap-setup-checklist.md`(IAP 後台設定)。
