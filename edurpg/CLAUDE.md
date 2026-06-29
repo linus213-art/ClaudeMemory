@@ -586,6 +586,29 @@ this.worldLayer.x = -target;   // scroll = -worldLayer.x；node hit areas 跟著
 - 穿脫的「slot/資格」判斷在 `LexiconInventoryOverlay` 與 `PlayerInfoPanel`(紙娃娃) 各有一份（兩者都呼叫
   `equipGear/equipWeapon/equipOffhand`）。兩個是不同 UI（清單 vs 紙娃娃）可並存，但 slot 解析邏輯日後可抽共用 helper。
 
+## 產圖候選工作流程（FLUX 批量 → checkbox 預覽網頁挑選 → CSV）
+
+> 標準作法：要產一批遊戲美術（替換 emoji / 新場景素材等），**一律按下面流程**——
+> 用本機 ComfyUI FLUX 批量產**每素材多個變體**，做成 checkbox 預覽網頁讓使用者勾選保留哪些、匯出 CSV，
+> 我再依 CSV 去背入庫。**不要**自己選圖或只產單張就接進遊戲；候選要交給使用者挑。
+
+1. **產圖（本機 ComfyUI，不吃 AutoSprite 額度）**：靜圖走 Windows ComfyUI `192.168.11.76:8188`（Mac 從 LAN 連得到）。
+   寫 / 沿用一支產圖腳本（範本 `tools/gen_cuteworld.mjs`，仿 `tools/gen_comfyui.mjs`）：catalog 列 `{theme,slug,seed,desc}`，
+   **每素材換 N 個 seed 產 N 個變體**（預設 3），套全域 STYLE SUFFIX + **白底**（FLUX 無原生透明，事後 floodfill 去背），
+   輸出 `public/assets/<feature>/_raw/<theme>/<slug>_v<n>.png`。可用主題參數分批跑（背景），已存在的跳過。
+   FLUX prompt 規則見 memory [[feedback_flux_image_gen_prompts]]（英文、正向描述、FluxGuidance+cfg=1.0）。
+2. **預覽網頁（checkbox + CSV）**：跑 `tools/build_cuteworld_preview.mjs`（範本）掃 `_raw/` 產
+   `public/assets/<feature>/_preview/index.html`——每素材變體並排、可複選勾選、即時存 localStorage、按鈕匯出
+   `picks.csv`（欄位 `theme,slug,variant,checked`）。每多產一批就重跑刷新清單。
+3. **預覽伺服**：`python3 -m http.server 8777 --bind 0.0.0.0 --directory /Users/linus/edurpg`（已常駐一支服 repo root），
+   給使用者 `http://192.168.11.99:8777/public/assets/<feature>/_preview/index.html`（Mac + 同網段 Windows PC 皆可開）。
+   屬 LAN 內網存取，**不適用** cloudflared 公網那條「需本人同意」規則。
+4. **入庫**：使用者回 CSV 後，依 checked=1 的變體 → ImageMagick floodfill 去背（`docs/ASSET_GEN.md` §4）；
+   **不需透明的轉 jpg** 減檔；搬進 `public/assets/<feature>/`（去掉 `_v<n>` 與 `_raw/`）。Phaser 載入一律相對路徑。
+
+> 判準：靜圖 → 本機 ComfyUI；逐格動畫 spritesheet 才用 AutoSprite（吃 credits）。CSS/Phaser tween 套靜圖的「動」仍算靜圖。
+> 完整素材生成三管線（AutoSprite 動畫 / FLUX 靜圖 / Azure TTS）見 `docs/ASSET_GEN.md`。
+
 ## Reference docs in this repo
 
 - `OPERATIONS.md` — full restart / deploy / recovery runbook.
