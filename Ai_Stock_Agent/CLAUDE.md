@@ -69,6 +69,7 @@ cd /Users/linus/Ai_Stock_Agent
 | `orphan_cleanup` § | 每月 1 號 03:40 | 孤兒股清理(houseclean):`stock.source='onboarded'` 且不在任何 watchlist 且 `last_referenced_at` 超過 `ORPHAN_CLEANUP_DAYS`(預設 90)→ 刪該股 11 張表 + stock 列,發 admin。**seed universe 永不清**;既有股經 migration 0021 全標 seed(保守),只有此功能上線後新 onboard 的才可清。跑 `ai_stock_agent.jobs.orphan_cleanup`（`--days` 覆寫）|
 | `datasync_price` § | 週一～五 14:30 | 日線增量同步(**上市 TWSE**;TWSEAdapter `STOCK_DAY`) |
 | `datasync_price_tpex` § | 週一～五 14:40 | **上櫃 TPEX** 日線增量同步:FinMind `TaiwanStockPrice`(上市+上櫃通用)逐檔補 `price_daily`,因 TWSEAdapter 只含上市,上櫃股原本無價(overlay 損益/流動性護欄拿不到價)。跑 `ai_stock_agent.scripts.sync_price_tpex`(增量;首見 symbol 自動冷回補 420 天) |
+| `datasync_price_tpex_evening` § | 週一～五 21:00 | **晚場 TPEX resweep**:同 `sync_price_tpex` module 再跑一次,補 14:40 那輪當下 FinMind 上櫃資料還沒發布而漏抓的碼(TPEX 發布延遲會週期性復發,見 memory `datasync-tpex-publication-lag`)。增量冪等,排在 22:00 `data_gap_check` 前補完,免每次靠隔天手動 `sync_price_tpex` |
 | `datasync_fundamental` § | 週六 07:00 | 季財報同步 |
 | `leading_indicator_us` § | 週日～五 06:00 | 美股領先指標 |
 | `leading_indicator_jp` § | 週一～五 | 日股領先指標 |
