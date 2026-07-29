@@ -50,24 +50,28 @@ cd /Users/linus/cleo
 4. **cloudflared tunnel**(LaunchDaemon `system/com.cloudflare.cloudflared`)
 5. **cleo-web**(pm2 → `ecosystem.config.js`,Next.js on `:3000`)
 6. **api**(`scripts/run-api.sh` → `python -m cleo_api.main`)— 等 `/healthz` 健康後才繼續
-7. **worker**(`scripts/run-worker.sh` → `python -m cleo_worker.main`)
+7. **worker**(`scripts/run-worker.sh --queue default --queue summary --queue briefing` → `python -m cleo_worker.main`)
+7b. **worker-meeting**(CLE-705,`scripts/run-worker.sh --queue meeting_audio` → 同一支 `python -m cleo_worker.main`,獨立行程 + 獨立 PID 檔 `.cleo-run/pids/worker-meeting.pid`)
+   — `meeting_audio` queue 拆到**專用行程**,不跟主 worker 共用。原因:本地 WhisperX 轉錄長會議(見 §7)可能跑超過 30~60 分鐘,RQ 一個行程一次只跑一個 job,若跟主 worker 共用會**卡住同行程要處理的 `health_heartbeat` job**(CLE-661,每 5 分鐘該執行一次)→ 觸發假的「worker heartbeat stale」sentinel 警報,且會延誤 `default` queue 上其他該即時處理的工作(提醒 DM 等)。`start_cleo.sh` 用 `worker_role_for_pid()` 依完整指令列(`--mode workflow-fire-loop` / `meeting_audio`)分辨同一 base command 的三種角色(main / meeting / fire-loop),避免 pid 檔互相踩到。`CLEO_START_MEETING_WORKER=0` 跳過(連同 `CLEO_START_WORKER=0`)。
 8. **workflow fire-loop**(pm2 → `cleo-worker-fire-loop`,`scripts/run-worker-fire-loop.sh` → `python -m cleo_worker.main --mode workflow-fire-loop`)
    — 必須在 worker (RQ) 跟 scheduler 之間,因為 scheduler 會排 fire 進 Redis ZSET `workflow:scheduled`,fire-loop 要把它 pop 出來。pm2 管理 → 進程意外掛掉 5 秒內 auto-restart。
 9. **scheduler**(`scripts/run-scheduler.sh` → `python -m cleo_scheduler.main`)
 10. **bot**(`scripts/run-bot.sh` → `python -m cleo_bot.main`)
 11. **public tunnel 健康檢查**(`CLEO_PUBLIC_URL/healthz`、`WEB_PUBLIC_URL/`)
 
-可用 env 跳過個別步驟:`CLEO_START_WEB=0`、`CLEO_START_WORKER=0`、`CLEO_START_FIRE_LOOP=0`、`CLEO_START_SCHEDULER=0`、`CLEO_START_TUNNEL=0`。
+可用 env 跳過個別步驟:`CLEO_START_WEB=0`、`CLEO_START_WORKER=0`、`CLEO_START_MEETING_WORKER=0`、`CLEO_START_FIRE_LOOP=0`、`CLEO_START_SCHEDULER=0`、`CLEO_START_TUNNEL=0`。
 
 ### 單獨停止 — `./scripts/stop_cleo.sh`(反向順序)
 
-1. bot → scheduler → fire-loop(pm2)→ worker → api(python 服務 SIGTERM,20 次 0.5s 內未停才 SIGKILL;fire-loop 走 `pm2 stop`)
+1. bot → scheduler → fire-loop(pm2)→ worker → worker-meeting → api(python 服務 SIGTERM,20 次 0.5s 內未停才 SIGKILL;fire-loop 走 `pm2 stop`)
 2. cleo-web(`pm2 stop cleo-web`)
 3. redis(`redis-cli shutdown nosave`)
 4. cloudflared(`launchctl bootout`)
 5. **postgres 預設不停**;要停得設 `CLEO_STOP_POSTGRES=1`
 
 `CLEO_STOP_FIRE_LOOP=0` 可在 stop 階段保留 fire-loop(api/bot redeploy 不影響 fire-loop)。
+
+`CLEO_STOP_MEETING_WORKER=0`(CLE-705)可保留 `worker-meeting` 行程 —— **有長會議轉錄正在跑時,重啟其他服務前先設這個**,不然 `restartCleo.sh` 會連同它一起 SIGTERM,白做的轉錄進度全丟(WhisperX 沒有 checkpoint/resume)。設了之後 stray-process 掃除(`stop_matching_processes`)也會跳過命令列含 `meeting_audio` 的行程,不會被撈到殺掉。
 
 ### 個別重啟 cleo-web 的小提醒
 
