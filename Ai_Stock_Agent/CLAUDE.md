@@ -378,6 +378,29 @@ curl "http://192.168.11.99:8080/api/v1/scorecard/latest?period_kind=month" \
   統一進 `signal_observation` 台帳對前向報酬計分。個股軸對自身、大盤軸對 TWII;每日 `signal_collect`(22:10)採集、`signal_universe`(22:30)維護焦點宇宙。
   - **分析師訊號接法(2026-06-28)**:`analyst_method`(DeepSeek 已結構化抽 category+claim+direction)→ `map_analyst`/`map_analyst_market`(`analysis/signal_collectors.py`,curated)→ 進台帳。`sim_plan` 波段 `_swing_signals` **只吃 `analyst_view`**(一檔一個分析師共識訊號),per-category 5 源是「scorecard-only」(同批點名衍生,餵進去會在 equal-weight `signal_component` 重複計權),由 `_ANALYST_SCORECARD_ONLY` 在 SQL 排除。歷史回放:`backfill_signal_observations --sources analyst_view,...`。dashboard `/dashboard/analyst` 每檔分行顯示 `[category] 具體claim`(站上季線/營收創高/毛利率53%→66%…)+ 大盤 `market_methods`。
 
+### 訊號歸因研究 API + 研究頁（Research，2026-08-07，第六個 dashboard 頁）
+
+回答「哪種分析最貼近實際漲跌」並讓結論**可實測**。與計分卡的分工:計分卡看**原始報酬**的命中率/IC;
+研究頁一律看**超額(alpha)**——個股訊號扣掉同期大盤(TWII)。因為 2026-06~08 大盤自 47,741 崩到 40,039
+再彈回 44,611,不扣大盤的話所有偏多訊號都「看起來很爛」,分不出真本事與跟漲跌。
+
+| 動作 | Method + Path | 說明 |
+|---|---|---|
+| 現算歸因 | `GET /api/v1/research/findings?days=45` | **不落地**,每次現算。逐源逐 horizon 的 edge/命中率/IC + 逐位分析師 + 理由類別 + 看多/看空對照 + 點名個股排行。台帳空 → 200 + 空殼 |
+| 開研究組 | `POST /api/v1/research/portfolio` | 依三條結論開實驗組(+ 預設對照組),政策寫進 `sim_portfolio.config_json['policy']` |
+
+- **頁面**:`GET /dashboard/research`(HTML shell,token 前端輸入)。**改 HTML/route 後需 restart api**(烤在記憶體)。
+- **關鍵方法論**:單邊比例 ≥90% 的源(如 `hedge_*` 6 子分在台帳幾乎恆為同一 sign)其 edge 反映的是
+  市場漲跌**而非鑑別力**,回傳 `interpretable=false`、頁面標「樣本單邊」並淡化——那種源只有 IC 可讀。
+  **別再把 hedge 子分的負 edge 誤判成「模型失效」**;要真正評價它得先讓子分變雙向連續值(z-score)。
+- **三條結論(2026-08-07 窗口,純函式在 `analysis/signal_policy.py`)**:
+  ① 分析師**非對稱**——看空點名 5 日超額 +1.24%(命中 53%)、看多 −1.47% → 看多打折 ×0.4、看空加權 ×1.5;
+  ② 法人**重配權**——`inst_foreign` +0.67% / `inst_report` +1.13% 加權 ×1.5,`inst_trust` −0.60% ×0.5、`daily_signal` ×0.7;
+  ③ **大盤擇時閘門**——`macro_ixic/sox/vix` 對隔日 TWII IC +0.49~+0.61(15 個月穩定)→ 風險偏空日按係數縮小單股上限。
+- **政策接進 `sim_plan`**:`_prepare_portfolio` 對 swing 訊號套 `apply_policy`(只縮放**信心**,永不翻方向、
+  永不新增訊號);`_apply_market_gate` 只縮小 `max_single_name_weight`(**不擋出場**,該停損照賣)。
+  政策全關 = 恆等變換,對照組 `reason_json` 與政策上線前逐鍵相同(有政策才多一個 `policy` 鍵)。
+
 ### 第二層：盤中大單即時偵測（Intraday Monitor，M9 / TASK-174 上線）
 
 > **這是「第二層」**,與「第一層」（盤後個股法人資金流向報表,見上節）**正交**:
