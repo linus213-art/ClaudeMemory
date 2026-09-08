@@ -94,8 +94,9 @@ cd /Users/linus/Ai_Stock_Agent
 | `refresh_holdings_signals` § | 週一～五 22:50 | **Signal Scorecard** 持股資料自動回補(M11)。跑 `ai_stock_agent.jobs.refresh_holdings_signals`:解決「使用者持股(尤其法人同步 universe 未涵蓋的 off-universe 股如宏碁2353/正文4906)在計分卡缺資料」。① 對每檔持股回補 `stock_institutional_daily`(**新/稀疏持股(法人<60列)→深度420天**全歷史、已覆蓋→增量45天)② 重跑 signal observation backfill **限持股 symbol**,補上 inst_*/daily_signal 觀測。idempotent。排在 institutional 21:15 後。手動:`python -m ai_stock_agent.scripts.backfill_holdings_institutional` + `... backfill_signal_observations --symbols 2353,4906` |
 | `intraday_flow_eod` § | 週一～五 13:35 | **Signal Scorecard** 盤中大單收盤落地(M11，TASK-185)。跑 `ai_stock_agent.jobs.intraday_flow_eod`:讀 `intraday_dashboard_state` singleton(收盤後仍存最後狀態)拆 per-symbol → upsert `intraday_flow_daily`,供 signal collector 採 `intraday_flow` 源。**不碰** intraday_monitor daemon;singleton 為當日(generated_at≠當日交易日)才落地,否則不寫(無 Shioaji feed 時正常空) |
 | `signal_universe` § | 週一～五 22:30 | **Signal Scorecard** 焦點宇宙維護(M11，TASK-184)。跑 `ai_stock_agent.jobs.signal_universe`,排在 signal_collect 22:10 後:重算持股、累計 curated 點名熱度(EWMA)→ 套 TTL(10 交易日無 curated 點名)/ 容量(焦點 K=100,持股不計)下車 + re-activation,upsert `signal_universe`。**軟下車**(active=false)只擋 baseline collector 開新單,在途 observation 照回填。詳見 `docs/Signal_Scorecard_Spec.md` §6 |
+| `indicator_lab_verify` § | 週六 10:00 | **指標 Lab 自動驗證**(2026-09-08):跑 `ai_stock_agent.jobs.indicator_lab_verify`,讓指標結論持續被新資料檢驗並自我修正。① **樣本外驗證**:取上一次 run 的 playbook(每指標用法/極性/可用與否 + 最佳組合)**參數凍結**套到那次研究沒看過的新資料上重算 —— 出場方式**不重新搜尋**(同一段資料既選參數又報成績只會過度配適)。判定:上次說可用→新資料仍有正 edge 才算「成立」;上次說參考性低→仍然不行也算「成立」。新資料 <15 個交易日就跳過驗證(訊號要走得完持有期)。結果存 phase='V' 卡掛在**本次新 run** 底下(append-only) ② **重跑最新研究**(滾動半年窗口)→ 下一輪的驗證對象 ③ 發 report webhook(幾條成立/翻盤 + 累計穩定度)。查看:`/dashboard/sim-lab` 的「自動驗證追蹤」區塊、`GET /api/v1/sim/lab/verification`。**決勝指標是「真淨 edge」不是 alpha**,見下方 §5 |
 | `price_alert` § | 每 5 分鐘(**各市場開盤時段內**) | **個人持股價格提醒**:跑 `ai_stock_agent.jobs.price_alert`。① 台股持股(`user_watchlist` 有 shares/avg_cost)相對**成本**的損益幅度跨 ±{10,12,15,20}% ③ 台股持股**來到近 N 日新高**(N=7/14/21/28/35/42/49/56/60/70/80/90 **日曆日**;收盤基準、排除當日,與 dashboard 破高上色同慣例)。窗口是**巢狀**的(破 90 日必定同時破 7~80 日),所以**只報最長那一個**、一次突破一則(**只報最長窗口**,巢狀關係讓列舉 7/14/21 沒有額外資訊)——每窗一則的話實測會從 1.4 則/日 膨脹到 3.0 則/日。訊息含**代號+中文名**與**持有成本**。去重鑰匙是**日期**(`high:YYYY-MM-DD`)不是窗口:突破是重複發生的事件,用窗口當鑰匙 12 個發完就永久安靜。日期取 `quote.as_of`,所以上櫃股遇 TPEX 發布延遲時會以當下最新資料日提醒、晚場補齊後可再提醒一次 ② 美股持股(`foreign_holding`)股價**上穿**設定價位(ORCL 200/250/270/280/290/300/310)→ 發 **Discord 私訊**(`notify/discord_dm.py`,用 `DISCORD_BOT_TOKEN` 直接打 Discord REST API,**不接個人秘書專案的 Redis/程式碼**)。**一個門檻只發一次**:`price_alert_fired` 主鍵去重,先 `INSERT ON CONFLICT DO NOTHING` 搶發送權、送出成功才 `delivered=true`(送失敗的下一輪會重試)。台股報價走 MIS→EOD,美股走 yfinance 並把報價快取進 `foreign_holding.last_price`(dashboard 只讀快取,不在 request path 打 yfinance)。刻意用 `StartInterval` 而非 calendar:要同時罩台股與美股兩個時區,列舉 calendar 條目又長又容易在換季漏掉。**時段限制在 job 內判斷**(`respect_market_hours`,預設開):台股只在 09:00–13:30 Asia/Taipei、美股只在 09:30–16:00 America/New_York(用 ZoneInfo,日光節約自動位移)評估;兩邊都休息就整輪跳過。`--seed` / `--dry-run` / `--ignore-hours` 是人工操作,會繞過此限制。**代價**:收盤後才落地的資料(如上櫃股 21:00 的 TPEX resweep)不會另外提醒——但該股在自己的盤中時段已用 MIS 即時報價評估過了。上線用 `--seed` 把當下已跨過的門檻標成已發(既有的不補發);`--dry-run` 只印不發 |
-| `premarket_auction` § | 週一～五 08:29(單次,08:59 自行結束) | **盤前試撮採集**:跑 `ai_stock_agent.jobs.premarket_auction`。台股 09:00 開盤前有 30 分鐘模擬撮合,委託在 **08:59:59 前都可自由撤單**。每 5 分鐘(08:30/35/40/45/50/55/**59**)對**持股**(`user_watchlist` 有 shares)取一次五檔加總量 → `premarket_auction_snapshot`;08:59 收尾後算結論 upsert `premarket_auction_summary`。① **買多/賣多**:以 08:59 那筆的 `(委買−委賣)/(委買+委賣)` 判定(最接近開盤、最難再撤),±15% 內視為均衡 ② **假掛單偵測**:比對整段**峰值 vs 收尾**,某側撤回 ≥50% 且峰值 ≥100,000 股就標記;兩側同時撤只報最嚴重那側(同時撤通常是流動性整體退場,不是針對性誘導)。**只訂閱持股**(避免撞 Shioaji 訂閱上限)。**獨立 daemon 而非併進 `intraday_monitor`**(後者 09:00 才開工、職責是盤中大單)。plist 無 `KeepAlive`——正常收工是 exit 0,設了會被無限重拉。**事後驗證**:`--backfill YYYY-MM-DD` 回填實際開盤/當日報酬到 summary,用來檢驗試撮方向到底有沒有預測力(**不預設它有用**;試撮預測力有爭議,尤其早期快照)。顯示在 `/dashboard/intraday` ③ 個人持股下方 |
+| `premarket_auction` § | 週一～五 **08:29** 啟動(08:59 結算後自行結束) | **盤前試撮採集**:跑 `ai_stock_agent.jobs.premarket_auction`。台股 09:00 開盤前有 30 分鐘模擬撮合,委託在 **08:59:59 前都可自由撤單**。每 5 分鐘(08:30/35/40/45/50/55/**59**)對**持股**(`user_watchlist` 有 shares)取一次五檔加總量 → `premarket_auction_snapshot`;08:59 收尾後算結論 upsert `premarket_auction_summary`。① **買多/賣多**:以 08:59 那筆的 `(委買−委賣)/(委買+委賣)` 判定(最接近開盤、最難再撤),±15% 內視為均衡 ② **假掛單偵測**:比對整段**峰值 vs 收尾**,某側撤回 ≥50% 且峰值 ≥100,000 股就標記;兩側同時撤只報最嚴重那側(同時撤通常是流動性整體退場,不是針對性誘導)。**只訂閱持股**(避免撞 Shioaji 訂閱上限)。**啟動窗(`should_run`, 08:25 起)與試撮窗(`is_auction_window`, 08:30 起)是兩個不同判斷**——launchd 08:29 啟動要留時間登入+訂閱,用試撮窗當進場守衛的話 job 一啟動就被自己擋掉(2026-09-08 上線首日事故,log 只有一行 `outside_window`)。排查第一個數字看 log 的 `sampled ... symbols=N simtrade=M`:`symbols=0` 是沒連上或市場沒推,`symbols>0 但 simtrade=0` 是拿到盤中/殘留委託簿而非試撮。**獨立 daemon 而非併進 `intraday_monitor`**(後者 09:00 才開工、職責是盤中大單)。plist 無 `KeepAlive`——正常收工是 exit 0,設了會被無限重拉。**事後驗證**:`--backfill YYYY-MM-DD` 回填實際開盤/當日報酬到 summary,用來檢驗試撮方向到底有沒有預測力(**不預設它有用**;試撮預測力有爭議,尤其早期快照)。顯示在 `/dashboard/intraday` ③ 個人持股下方 |
 | `intraday_monitor` § | 常駐(盤中 09:00–13:30) | **第二層**「盤中大單即時偵測」常駐 daemon(M9 Phase C，TASK-174)。跑 `ai_stock_agent.jobs.intraday_monitor`，訂閱 watchlist∪當日成交值前 N 大 → 聚合/偵測大單(代理主力)→ 維護 realtime Top10 dashboard state(`intraday_dashboard_state`)供 179 讀。**需 Shioaji 金鑰才實際連線**(未設則無 tick)。**用模擬模式即可**:`SHIOAJI_SIMULATION`(預設 `true`)→ 模擬模式仍給**真實盤中行情**(已驗證 snapshot/tick 為真),**不需正式/下單權限**,故只訂閱行情的本 daemon 用模擬即可、**免等永豐正式 API 審核**(正式只 gate `place_order`;正式開通後設 `false` 對行情無差異)。**每日 09:00 由 plist `StartCalendarInterval` 啟動**(`RunAtLoad` 只在載入跑一次,非交易時段 `exit 0` 後不被 KeepAlive 拉起,故需開盤觸發器)。連線/訂閱失敗 → clear log + 乾淨退出(started=False/exit 0),不 crash-loop。`KeepAlive={SuccessfulExit=false}`:收盤 13:30 正常 `exit 0` 不重啟、只有 crash 才拉起。健檢走獨立 `scripts/healthcheck_intraday_monitor.sh`(只在台北交易時段要求 pid)，**不**混進 API 的 `healthcheck.sh` |
 
 > 註：原「既有漂移」三個 job（`macro_indicators`、`indicators_pipeline`、`policy_calendar`）已於 2026-06-09 全部納管進 JOBS 並安裝，漂移清零。
@@ -436,6 +437,27 @@ curl "http://192.168.11.99:8080/api/v1/scorecard/latest?period_kind=month" \
   不告警、**不** auto-recover(crash 重拉由 `KeepAlive=SuccessfulExit=false` 負責)。
 - 交易時段內若未 loaded / 無 pid → 送 `DISCORD_ADMIN_WEBHOOK`(best-effort)並 `exit 1`。
 - 手動巡檢:`./scripts/healthcheck_intraday_monitor.sh`。
+
+### 技術指標研究 Lab —— 決勝指標是「真淨 edge」(2026-09-08 改)
+
+`/dashboard/sim-lab` + `ai_stock_agent.scripts.indicator_lab`(手動)/ `jobs.indicator_lab_verify`(每週)。
+**每個指標有三個效益數字,決勝的是第三個**:
+
+| 指標 | 定義 | 用途 |
+|---|---|---|
+| 絕對報酬 | 只扣交易成本 | 參考(普漲期閉眼買都賺) |
+| alpha | 再扣**同持有期間 TWII** | 參考 |
+| **真淨 edge** | 再扣**同持有期間全宇宙等權**籃子 | **決勝**(排名、polarity、usable、Phase B 貪婪搜尋全看它) |
+
+**為什麼要第三個**:TWII 是市值加權。2026-09-08 實測 2026-07-21 起那段,**平均個股 20 日贏 TWII +4.90%**
+(更早兩段只有 +0.06% / +0.34%)—— 中小型股普漲期,扣 TWII 的 alpha 會**全體虛高 1~2pp**,連空頭指標
+都變「有 alpha」。等權基準 =「當天閉眼買一籃子」,贏過它才是真選股鑑別力。等權指數由
+`scripts/indicator_lab.build_equal_weight_index`(每日再平衡、有效檔數 <30 的日子視為持平)算,純函式。
+**舊 run(#7 以前)沒有 net_edge 欄,dashboard 顯示「—」,不要拿舊 alpha 跟新 edge 直接比大小。**
+
+同日移除研究指標 `signal_level_buy`:實測 `score>=4` 與 `signal_level IN (BUY,STRONG_BUY)` 在 911 筆上
+**零不一致**,是同一訊號的兩種寫法;兩者並存會讓 Phase B 對它重複計權(舊 run 的「最佳 7 指標」實為 6 個)。
+研究宇宙因此是 **13 個**(12 布林旗標 + score 門檻)。
 
 ### Schema 來源
 
