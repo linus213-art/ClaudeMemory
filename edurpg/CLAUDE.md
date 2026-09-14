@@ -609,6 +609,66 @@ this.worldLayer.x = -target;   // scroll = -worldLayer.x；node hit areas 跟著
 > 判準：靜圖 → 本機 ComfyUI；逐格動畫 spritesheet 才用 AutoSprite（吃 credits）。CSS/Phaser tween 套靜圖的「動」仍算靜圖。
 > 完整素材生成三管線（AutoSprite 動畫 / FLUX 靜圖 / Azure TTS）見 `docs/ASSET_GEN.md`。
 
+## 新增單字題庫（vocab bank）後「選擇關卡」選不到 — 別再重新研究一次
+
+> 反覆會踩的坑：透過 `POST /api/admin/vocab/import-json` 匯入一個新題庫到 `vocab_banks`/`vocab_words`
+> 後，遊戲內「選擇關卡」畫面**完全看不到這個新題庫**（不管 gradeCode/publisher 填得多標準）。
+> 2026-09-14 第一次踩雷 + 完整查明，記錄如下，之後不必再重新研究一次。
+
+### 「選擇關卡」畫面架構（先搞懂，才知道要查哪裡）
+
+- Scene（抓資料/邏輯）：`src/scenes/LessonSelectScene.ts`；React overlay（實際畫面）：
+  `src/ui/SelectLevelOverlay.tsx`。
+- **資料來源看有沒有登入**（`LessonSelectScene.loadLessonIndex()`）：
+  - **已登入**：打 `GET /api/vocab/banks`（`backend/src/routes/vocab.ts`），每個 bank 帶一個
+    `access` 欄位（是否有效存取權）。**前端接著 `.filter(b => b.access?.active === true)`
+    把沒有有效 access 的 bank 整批濾掉**，才組成候選清單。
+  - **未登入 / API 失敗**：改讀靜態 `public/data/lessons/index.json`，這條路徑沒有 access 檢查。
+- **年級/出版社篩選器選項是寫死陣列**（`LessonSelectScene.ts` 的 `TEXTBOOK_GRADES` / `publishers`
+  常數），不是動態從資料蒐集出現過的值。`gradeCode` 沒帶數字（如 `"ep"`）在
+  `backend/src/routes/admin.ts` 的 `gradeCodeToInt()` 會轉成 `grade=0`，`semesterCode` 不是
+  `"s2"` 一律轉成 `semester=1`；`grade===0` 的 bank 前端一律顯示成「國小／全年級」，對應篩選器的
+  「國小全」選項——**這條路徑不太會出錯**，新舊國小題庫在這幾個欄位上通常會自動對齊。
+
+### 真正的根因九成是這個：`bank_accesses` 表沒有任何一筆授權
+
+**這個專案的存取模式是「每個 bank 都要明確授權才會出現在已登入使用者的清單」，不是
+「免費/低價 = 自動所有人都能玩」。** 新匯入的 bank 在 `vocab_banks` 裡誕生時，`bank_accesses`
+一筆都沒有——所以不管 gradeCode / 篩選器 / unitPriceDiamonds 填得多正確，**已登入玩家的「選擇
+關卡」清單在 access 檢查那一步就把它濾掉了**，根本不會走到年級篩選那一關。未登入訪客看的是
+`index.json`（無 access 檢查）理論上看得到，但正式帳號一律看不到。
+
+**排查步驟（先查這個，不要先懷疑 gradeCode 或篩選器程式碼）**：
+```sql
+SELECT bank_id, COUNT(*) FROM bank_accesses WHERE bank_id = '<新bank的id>' GROUP BY bank_id;
+-- 沒有任何一列 = 這就是根因，不必往下查篩選器程式碼
+```
+
+### 授權從哪來的兩種機制（新帳號 vs 既有帳號，兩者都要處理）
+
+1. **新帳號（未來註冊的）**：`backend/src/lib/onboarding.ts` 的 `ONBOARDING_BANKS` 常數，註冊時
+   自動 `applyOnboardingForUser()` 給予「國一下/國二下 Unit1」10天試用 + 「國三下 Unit1」永久免費
+   （保底能玩的題庫）。**要讓新題庫「所有人永久免費」，把它加進這個陣列**
+   （`{ grade, semester, unit, trial: false }`，`grade/semester/unit` 對應 `vocab_banks` 表裡
+   `gradeCodeToInt()`/`semesterCodeToInt()` 轉出來的整數 + unit 字串，要唯一能篩出這個 bank）。
+   改完要 `cd backend && npm run build` 才會進 `dist/`，重啟 prod 才生效（只影響「之後」新註冊的帳號）。
+2. **既有帳號（已經註冊過的）**：onboarding.ts 只在註冊當下跑一次，**不會自動回溯套用到舊帳號**。
+   千萬不要用 `backend/scripts/migrate-existing-players-onboarding.ts`——**那支會先
+   `bankAccess.deleteMany({})` 清空全部人的 BankAccess 再重建**，會把玩家已購買的題庫授權整個
+   洗掉，prod 上這樣做是災難。改用新寫的**非破壞性**腳本，只 upsert「這一個 bankId」、不動任何人
+   其他的購買/試用紀錄：
+   ```bash
+   cd backend
+   npx ts-node-dev --transpile-only scripts/grant_bank_access_all_users.ts --bank-id <uuid>            # dry-run
+   npx ts-node-dev --transpile-only scripts/grant_bank_access_all_users.ts --bank-id <uuid> --confirm  # 實際寫入
+   ```
+   （2026-09-14 首次用於 `en-hanlin-ep-alphabet-vocabulary`，57/57 帳號補發成功。）
+
+> 判斷準則：新題庫如果**只是想讓特定使用者**（例如已購買的班級/家長綁定）看到，走一般的購買/兌換/
+> 家長綁定流程即可，不必碰 onboarding.ts。**只有「打算讓所有人永久免費玩」的題庫**（例如這個 ABC
+> 入門救援題庫）才需要走上面兩步（onboarding.ts 加項 + 補發腳本），兩步缺一不可（只做前者新帳號有、
+> 舊帳號沒有；只做後者現有帳號有、之後新註冊的帳號又會漏掉）。
+
 ## Reference docs in this repo
 
 - `OPERATIONS.md` — full restart / deploy / recovery runbook.
