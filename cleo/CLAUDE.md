@@ -53,17 +53,19 @@ cd /Users/linus/cleo
 7. **worker**(`scripts/run-worker.sh --queue default --queue summary --queue briefing` → `python -m cleo_worker.main`)
 7b. **worker-meeting**(CLE-705,`scripts/run-worker.sh --queue meeting_audio` → 同一支 `python -m cleo_worker.main`,獨立行程 + 獨立 PID 檔 `.cleo-run/pids/worker-meeting.pid`)
    — `meeting_audio` queue 拆到**專用行程**,不跟主 worker 共用。原因:本地 WhisperX 轉錄長會議(見 §7)可能跑超過 30~60 分鐘,RQ 一個行程一次只跑一個 job,若跟主 worker 共用會**卡住同行程要處理的 `health_heartbeat` job**(CLE-661,每 5 分鐘該執行一次)→ 觸發假的「worker heartbeat stale」sentinel 警報,且會延誤 `default` queue 上其他該即時處理的工作(提醒 DM 等)。`start_cleo.sh` 用 `worker_role_for_pid()` 依完整指令列(`--mode workflow-fire-loop` / `meeting_audio`)分辨同一 base command 的三種角色(main / meeting / fire-loop),避免 pid 檔互相踩到。`CLEO_START_MEETING_WORKER=0` 跳過(連同 `CLEO_START_WORKER=0`)。
+7c. **worker-media**(CLE-736,`scripts/run-worker.sh --queue media_download`,PID 檔 `.cleo-run/pids/worker-media.pid`)
+   — 站長限定 YouTube→mp3 下載/轉檔(見 §18),一支可能跑數分鐘,同 7b 理由拆獨立行程。`worker_role_for_pid()` 依命令列含 `media_download` 判成 `media` 角色。`CLEO_START_MEDIA_WORKER=0` 跳過。
 8. **workflow fire-loop**(pm2 → `cleo-worker-fire-loop`,`scripts/run-worker-fire-loop.sh` → `python -m cleo_worker.main --mode workflow-fire-loop`)
    — 必須在 worker (RQ) 跟 scheduler 之間,因為 scheduler 會排 fire 進 Redis ZSET `workflow:scheduled`,fire-loop 要把它 pop 出來。pm2 管理 → 進程意外掛掉 5 秒內 auto-restart。
 9. **scheduler**(`scripts/run-scheduler.sh` → `python -m cleo_scheduler.main`)
 10. **bot**(`scripts/run-bot.sh` → `python -m cleo_bot.main`)
 11. **public tunnel 健康檢查**(`CLEO_PUBLIC_URL/healthz`、`WEB_PUBLIC_URL/`)
 
-可用 env 跳過個別步驟:`CLEO_START_WEB=0`、`CLEO_START_WORKER=0`、`CLEO_START_MEETING_WORKER=0`、`CLEO_START_FIRE_LOOP=0`、`CLEO_START_SCHEDULER=0`、`CLEO_START_TUNNEL=0`。
+可用 env 跳過個別步驟:`CLEO_START_WEB=0`、`CLEO_START_WORKER=0`、`CLEO_START_MEETING_WORKER=0`、`CLEO_START_MEDIA_WORKER=0`、`CLEO_START_FIRE_LOOP=0`、`CLEO_START_SCHEDULER=0`、`CLEO_START_TUNNEL=0`。
 
 ### 單獨停止 — `./scripts/stop_cleo.sh`(反向順序)
 
-1. bot → scheduler → fire-loop(pm2)→ worker → worker-meeting → api(python 服務 SIGTERM,20 次 0.5s 內未停才 SIGKILL;fire-loop 走 `pm2 stop`)
+1. bot → scheduler → fire-loop(pm2)→ worker → worker-meeting → worker-media → api(python 服務 SIGTERM,20 次 0.5s 內未停才 SIGKILL;fire-loop 走 `pm2 stop`)
 2. cleo-web(`pm2 stop cleo-web`)
 3. redis(`redis-cli shutdown nosave`)
 4. cloudflared(`launchctl bootout`)
@@ -727,3 +729,27 @@ POST → `/webhooks/email/inbound` → triage worker → DM**。
 - 日期參數傳 `date` 物件(非 `.isoformat()` 字串);users 讀 `effective_plan`(非 `plan_id`);
   出門/行事曆提醒 `quiet_hours_policy="bypass"`。
 - 新事故請按該檔格式追加,維持「給未來 dispatcher / Claude Code 參考」的摘要密度。
+
+---
+
+## 18. YouTube → mp3 下載(CLE-736,**站長/白名單限定,非公開功能**)
+
+> ⚠️ YouTube ToS 禁止下載、2020 youtube-dl DMCA 就是 RIAA 針對「抓音樂」。**不要**把它做成公開功能、
+> 不要加進 scope_classifier / recipe / 方案說明。只做 mp3(不做 mp4)。
+
+- **開關**:`CLEO_YOUTUBE_AUDIO_ENABLED=1`(預設關)+ `CLEO_YOUTUBE_AUDIO_ALLOWLIST=<discord id,…>`
+  (`ADMIN_DISCORD_ID` 永遠在內)。`Settings.youtube_audio_allowed_discord_ids()`;flag 關 → 空集合 → 整條 inert。
+  長度上限 `CLEO_YOUTUBE_AUDIO_MAX_DURATION_SECONDS`(預設 7200)。
+- **流程**:DM 貼 YouTube 網址 → `YoutubeAudioCog.try_handle_message`(`apps/bot/cleo_bot/cogs/youtube_audio.py`,
+  `on_message` 鏈,**確定性 regex、0 LLM**;非白名單直接 fall through)→「🎵 下載 MP3 / 取消」按鈕 →
+  enqueue `cleo_worker.tasks.youtube_audio.run_youtube_audio_download` 到 **`media_download` queue(worker-media)**
+  → yt-dlp bestaudio + ffmpeg 192k → 上傳 meeting-audio bucket `media/youtube-audio/<discord_id>/<uuid>.mp3`
+  → `media_download_links`(sha256 token,**1 小時多次可用**)→ DM 下載頁 `{web_public_url}/media/download?token=`。
+- **下載頁**:`apps/web/app/media/download` → `/api/media/download-info`(metadata)、`/api/media/download-file`
+  → API `/media/download-file` 302 到 presigned S3 GET(≤10 分且不超過連結剩餘時間,`Content-Disposition:
+  attachment` + UTF-8 檔名)。bytes 直接從 S3 下載,不經 tunnel。
+- **清除**:scheduler `media_download_sweep` 每 15 分 enqueue `sweep_expired_media_downloads.run` 到
+  `media_download` queue → 刪 S3 物件、`blob_url=NULL`、`deleted_at`。
+- **yt-dlp 需要 JS runtime**:YouTube 抽取要 JS,yt-dlp 預設只開 deno;我們用 Homebrew **node**
+  (`js_runtimes={"node":…}`,`_tool_path` 找不到 PATH 時 fallback `/opt/homebrew/bin`)。ffmpeg 同理。
+  **YouTube 常改版 → 一直失敗先 `uv lock --upgrade-package yt-dlp && uv sync` 再重啟 worker-media。**
