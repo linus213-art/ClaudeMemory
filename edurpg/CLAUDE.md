@@ -2,6 +2,11 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> 這份只放「每次都要遵守」的規則 + 常用速查。主題細節已拆出去，**做到那個主題時再讀**：
+> - `src/CLAUDE.md` — Phaser 場景縮放 / 邊界 / 踩坑清單 / 背包元件 / 靜態資源相對路徑（讀 `src/` 檔案時自動載入）
+> - `backend/CLAUDE.md` — 新題庫授權（bank_accesses）/ ECPay / Google 模型 / TTS 補跑（讀 `backend/` 檔案時自動載入）
+> - `docs/runbooks/` — Mac 環境完整版、dispatcher、發版 + iOS 簽章、FLUX 產圖流程、Windows 專用（索引見 `docs/runbooks/README.md`）
+
 ## 語言規則（最高優先，務必遵守）
 
 > **永遠用繁體中文回覆使用者。** 不論對話進行多久、不論工具輸出或程式碼是什麼語言，
@@ -26,128 +31,47 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 做完 review 後，在給使用者的結論裡**主動說明**：完成了什麼、刻意保留沒做的（含原因）、還有什麼已知缺口或後續建議。
 使用者若問「有漏掉沒做的嗎」，這份審查就是答案來源。
 
-## macOS 本機環境（最常被問,先看這段）
+## macOS 本機環境（摘要；完整版 `docs/runbooks/mac-environment.md`）
 
-> 這個 repo 同時跑 Windows 工作站(`E:\AI_Workbench_Data\edurpg`)和 macOS(`/Users/linus/edurpg`)。
-> 當前 session 在 macOS,以下是 Mac 上不會變的常駐答案,不必每次重問。
+- **Repo root + PROD 都在** `/Users/linus/edurpg`（branch `master`）。Mac 上 prod 直接從 master root 跑，**沒有 dev/prod 樹分裂**；`backend/.env`、`admin/.env` 改完不必複製到 `stable-3005`。
+- `/Users/linus/edurpg.worktrees/` 只給 dispatcher 用（`task-NNN/`）；`stable-3005/` 只是 git mirror，**不是** prod 部署目標。
+- Logs / PID：`tools/logs/`（`.run-state.json`、`prod-backend.log`…）。Windows 端操作看 `docs/runbooks/windows.md`。
 
-### 1. Work area / 路徑
-
-- **Repo root + PROD 跑這**:`/Users/linus/edurpg`(branch `master`)。
-  `restart_prod.sh` 第 38 行 `ROOT="$HOME/edurpg"`,backend 第 436 行 cwd 就是 `$ROOT/backend`。**Mac 跟 Windows 不同——Windows 是 `stable-3005` worktree 跑 prod、master 跑 dev;Mac 上 prod 直接從 master root 跑,沒有 dev/prod 樹的分裂**。所以 backend code / `.env` 改完不必先 promote,restart_prod.sh 跑下去就生效。
-- **Worktrees dir**(**只給 dispatcher 用**,**不是 prod 部署目標**):`/Users/linus/edurpg.worktrees/`
-  - `stable-3005/` ← 雖然存在,**Mac 上 prod 並不從這跑**。它是個 git-synced mirror,promote 流程裡照 push origin/stable-3005 是為了分支歷史一致(別人 / Windows 端可能還在用),但實際 process 都從 master root 起的
-  - `task-NNN/` ← dispatcher 為每個任務開的暫時 worktree
-- **Logs / PID**:`/Users/linus/edurpg/tools/logs/`(含 `.run-state.json`、`prod-backend.log` 等)
-- **Env 檔**:`/Users/linus/edurpg/backend/.env`、`/Users/linus/edurpg/admin/.env`(gitignored)。**改完不必複製到 stable-3005**——prod 讀的就是 master root 那份
-
-### 2. 服務啟動 / 停止(Mac)
-
-主腳本是 bash,不是 PowerShell —— `scripts/restart_prod.sh`:
+### 服務啟動 / 停止
 
 ```bash
-cd /Users/linus/edurpg
-./scripts/restart_prod.sh                  # 啟動順序:postgres 檢查 → backend(3020)→ admin(3010)→ frontend(3005)→ cloudflared
-./scripts/restart_prod.sh --stop-only      # 只停服務
+./scripts/restart_prod.sh                  # postgres 檢查 → backend(3020) → admin(3010) → frontend(3005) → cloudflared
+./scripts/restart_prod.sh --stop-only
 ./scripts/restart_prod.sh --build-all      # 強制重 build backend + frontend
-./scripts/restart_prod.sh --no-tunnel      # 跳過 cloudflared
+./scripts/restart_prod.sh --no-tunnel
 ```
 
-> 🟥 **改 frontend code → 必須 `--build-all` 或 `--build-frontend`，否則 dist 不會重 build、prod 仍服舊 bundle**。
-> 這個重複踩雷過。預設 `restart_prod.sh` 只在 `dist/` 不存在時才 build frontend，所以你改了 `src/...`、commit、push、`restart_prod.sh` 跑完一切看似 OK，但 prod 服的還是上次 build 的舊 bundle、改動完全沒生效（特別是 mobile，因為 desktop 可能還沒被 cloudflared 邊緣節點 cache 命中、會看到正確版的）。
-> Backend code 同理（改 `backend/src/...` 要 `--build-backend` 或 `--build-all`），但 backend prisma client + ts 編譯比較容易被注意到。
-> **規則：只要改了 `src/...` 或 `backend/src/...` 任何 .ts，restart_prod 一律帶 `--build-all`。**
-> 例外：只改 `public/`（圖片、JSON、assets）→ 不必 build，restart 就生效。
+> 🟥 **只要改了 `src/...` 或 `backend/src/...` 任何 .ts，restart_prod 一律帶 `--build-all`。**
+> 預設只在 `dist/` 不存在時才 build，不帶的話 prod 會繼續服舊 bundle（重複踩雷過）。只改 `public/` 不必 build。
 
-健康檢查 timeout 45s,任一失敗就終止並 dump 該服務最後 30 行 log。Postgres 由 Homebrew (`postgresql@16`) 起,腳本只檢查不重啟(共用 idempotent 服務)。
+> 🟥 **重啟 PROD 前先確認沒人在線**（`SessionRunner` 狀態在記憶體，重啟會丟）；未經本回合授權不要重啟 prod：
+> ```bash
+> key=$(grep '^ADMIN_API_KEY=' /Users/linus/edurpg/backend/.env | cut -d= -f2)
+> curl -s -H "x-admin-key: $key" http://localhost:3020/api/admin/quiz/live-count
+> ```
+> `count > 0` → 先問使用者。常駐授權用語見 `Develop_MEMORY.md` §2.4。
 
-**重啟 PROD 前**仍要先確認沒人在線:
-```bash
-key=$(grep '^ADMIN_API_KEY=' /Users/linus/edurpg/backend/.env | cut -d= -f2)
-curl -s -H "x-admin-key: $key" http://localhost:3020/api/admin/quiz/live-count
-```
-`count > 0` → 先問使用者再重啟。(讀 master root 的 `.env`,不是 stable-3005——理由在上一段)
-
-### 3. Dispatcher — `tools/agent_dispatch_mac.ps1`
-
-PowerShell 7+ (`pwsh`)寫的 mac 版派工器,跟 Windows 的 `agent_dispatch.ps1` 同 pipeline 但路徑改 mac。
-
-**Pending tasks 目錄結構**:
-```
-tasks/pending/CODE/      ← 給 Claude Code(複雜邏輯、跨檔重構)
-tasks/pending/Copilot/   ← 給 Copilot CLI(scaffold、單檔 CRUD)
-tasks/pending/codex/     ← 給 Codex CLI
-tasks/done/              ← 完成後自動搬過來(含 .result.md commit hash + diff stat)
-tasks/logs/              ← 每次執行 log;`.stop-requested` 為軟停止旗標
-```
-Spec frontmatter 寫 Windows path(`E:\AI_Workbench_Data\edurpg.worktrees\task-NNN`),dispatcher 會抽 leaf 改成 `/Users/linus/edurpg.worktrees/task-NNN`,不必改 spec。
-
-**常用呼叫**:
-```bash
-pwsh ./tools/agent_dispatch_mac.ps1                       # 自動撿下一個未 block 的任務
-pwsh ./tools/agent_dispatch_mac.ps1 -TaskId TASK-005      # 指定任務
-pwsh ./tools/agent_dispatch_mac.ps1 -Agent CODE -DryRun   # 只印計畫
-pwsh ./tools/agent_dispatch_mac.ps1 -NoMerge              # 跑完不 merge,保留 worktree
-pwsh ./tools/agent_dispatch_mac.ps1 -SkipPush             # 不 push 到 origin/master
-```
-Agent 名稱接受 `CODE` / `Claude` / `Copilot` / `Codex`(`codex` folder 也認)。
-
-**軟停止**(等當前任務跑完再退):
-```bash
-touch /Users/linus/edurpg/tasks/logs/.stop-requested
-```
-
-**跨專案 guard**:`REPO_ROOT` / `WORKTREES_DIR` 路徑含 `cleo` / `aistock`,或 shell 有 `CLEO_*` / `AISTOCK_*` env,dispatcher 拒跑。同 shell 不要混設多專案 env。
-
-**Pipeline 順序**:`worktree add → claude/codex/copilot run → sanity check(必須有新 commit)→ npm ci(root + backend)→ build → test → merge to master → 搬 spec 到 done/ + 寫 .result.md → push`。Usage limit 失敗自動 retry(最多 20 次,backoff 15min × n),偵測到 `CLAUDE_FALLBACK_API_KEY` 會切備用 key。
-
-**Override env**:`EDURPG_REPO_ROOT`、`EDURPG_WORKTREES_DIR`、`EDURPG_BASE_REF`。
-
-### 4. DB / 服務連線(local)
-
-連線字串在各 worktree 的 `backend/.env`(gitignored),Mac 上的形式:
+### 服務 / DB
 
 | 服務 | 連線 | 備註 |
 |---|---|---|
-| Postgres | `postgresql://edurpg:<pw>@localhost:5432/edurpg_db` | Homebrew `postgresql@16`,user `edurpg`,DB `edurpg_db` |
-| Backend(PROD) | `http://127.0.0.1:3020` | `node dist/index.js`,健康檢查 `/api/health` |
-| Admin(PROD) | `http://127.0.0.1:3010` | `node server.js`,bind loopback only |
+| Postgres | `postgresql://edurpg:<pw>@localhost:5432/edurpg_db` | Homebrew `postgresql@16` |
+| Backend(PROD) | `http://127.0.0.1:3020` | `node dist/index.js`，健康檢查 `/api/health` |
+| Admin(PROD) | `http://127.0.0.1:3010` | bind loopback only |
 | Frontend(PROD) | `http://127.0.0.1:3005` | `vite preview --strictPort` |
-| Public tunnel | `https://edurpg.org` | cloudflared `vite-app` → `:3005` |
-| Dev backend / frontend | 3120 / 3105 | 用 Windows 端的 `restart_dev_stack.ps1`;Mac 端目前只跑 PROD |
+| Public | `https://edurpg.org` | cloudflared → `:3005` |
 
-DB 同一台 Postgres 上多專案共用:`edurpg_db`(prod)、`edurpg_dev_local`(dev,Windows 用)、`cleo`、`ai_stock_agent` 各自獨立 schema。**Mac 上不要 `brew services stop postgresql@16`**,會打掛 cleo / aistock。
+同一台 Postgres 多專案共用（edurpg / cleo / ai_stock_agent）。**🟥 不要 `brew services stop postgresql@16`**，會打掛別的專案。
 
-Prisma 操作(在 `backend/` 內):
-```bash
-cd /Users/linus/edurpg/backend
-npx prisma generate
-npx prisma migrate deploy          # PROD migration
-npx prisma migrate dev --name xxx  # 開新 migration
-```
+### Dispatcher
 
-### 5. 從 Windows PC 預覽 Mac 上的 `docs/` 靜態頁(如 `spell-fx-bake.html`)
-
-**症狀**:Windows PC 開 `http://192.168.11.99:8777/docs/spell-fx-bake.html` 連不上(connection refused / 逾時)。
-
-**先別懷疑網路 / IP**。`192.168.11.99` 就是這台 Mac 的 LAN IP(`ipconfig getifaddr en0`),八成是 **Mac 上根本沒有東西在監聽 8777**。先在 Mac 本機驗:
-```bash
-lsof -nP -iTCP:8777                                   # 沒輸出 = 沒人 listen
-curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8777/docs/spell-fx-bake.html  # 000 = refused
-```
-
-**修法**:在 repo root 起一個**綁所有介面**(`0.0.0.0`,不是預設只綁 loopback)的靜態檔伺服器,Windows PC 才連得到:
-```bash
-python3 -m http.server 8777 --bind 0.0.0.0 --directory /Users/linus/edurpg
-# → http://192.168.11.99:8777/docs/spell-fx-bake.html （?v=NN 是 cache-buster，隨意改）
-```
-這只是 **LAN 內網**存取(同網段才連得到),不是把服務暴露到公網,**不適用** cloudflared / 公網 tunnel 那條「需本人同意」規則。
-
-**仍連不上的話**:八成是 **macOS 防火牆**擋了 Python 的傳入連線 → 系統設定 → 網路 → 防火牆,允許 `python3` 或暫時關閉測試。(若本機 `curl 127.0.0.1:8777` 已 200、但 Windows 連不到,基本就是防火牆。)
-
-> ⚠️ `python3 -m http.server` 跑前景 / 背景都行,但**它跟著那個 shell / session 走,session 一停就停**。要長駐改包成 user LaunchAgent(`RunAtLoad`/`KeepAlive`,免 sudo)。
-
----
+`pwsh ./tools/agent_dispatch_mac.ps1`（`-TaskId TASK-005` / `-Agent CODE -DryRun` / `-NoMerge` / `-SkipPush`）。
+軟停止：`touch tasks/logs/.stop-requested`。目錄結構、pipeline、跨專案 guard 見 `docs/runbooks/mac-environment.md`。
 
 ## Repo layout — three packages, one repo
 
@@ -162,520 +86,46 @@ Each has its own `package.json` / `node_modules`. Always `cd` into the right one
 
 ## Common commands
 
-Frontend (`/`):
-- `npm run dev` — Vite dev server on **3005** locally (config), but the dev workflow uses the wrapper scripts which start it on **3105**.
-- `npm run build` — `tsc && vite build` → `dist/`.
-- `npm run dev:all` → `tools/restart_dev_stack.ps1` (full dev+prod stack restart).
-- `npm run dev:promote` → `tools/promote_to_prod.ps1`.
-
-Backend (`backend/`):
-- `npm run dev` — `ts-node-dev --respawn --transpile-only src/index.ts`.
-- `npm run build` — `tsc` → `backend/dist/`.
-- `npm start` — `node dist/index.js` (used in prod).
-- `npm test` / `npm run test:watch` — vitest. Run a single test: `npx vitest run __tests__/autogenGenerators.test.ts -t "<name>"`.
-- `npx prisma generate` / `npx prisma migrate deploy` / `npx prisma migrate dev`.
-- One-shot diagnostic scripts live in `backend/scripts/*.cjs` — run with `node backend/scripts/<name>.cjs`.
-
-Admin (`admin/`):
-- `npm start` — `node server.js` (port 3010 prod / 3011 dev via `PORT` env).
-
-## Versioning — 三平台共用版本號,別手動改
-
-Web / Android / iOS 共用一個 `versionName`(對外版號)+ 一個 `versionCode`(整數 build counter)。完整規則看 `RELEASE.md`,這裡只列**版本號實際存在哪、由誰寫**:
-
-| 欄位 | 檔案 / 位置 | 例值 | 誰會讀 |
-|---|---|---|---|
-| `versionName`(marketing) | `/VERSION` | `0.3.91` | Web(`vite.config.ts`)、`tools/build_ios.sh` 寫進 iOS `CFBundleShortVersionString`、`release_android.sh` 同步進 build.gradle |
-| `versionCode`(build counter) | `/android/app/build.gradle` 第 20 行 | `versionCode 10` | Android 直接用、`build_ios.sh` 寫進 iOS `CFBundleVersion` |
-| `versionName`(Android 鏡像) | `/android/app/build.gradle` 第 21 行 | `versionName "0.3.91"` | Android 直接用(由 `release_android.sh` 從 VERSION 同步,不要手動編) |
-
-**不出現在版本號裡的地方**(別誤改):
-- `package.json` / `backend/package.json` / `admin/package.json` 的 `"version"` — npm package metadata,跟對外版號無關,從來沒同步過
-- `CHANGELOG.md` / `RELEASE.md` 內文提到的版本號 — 是 release notes,不是 source of truth
-
-**標準 bump 方式**:跑 `tools/release_android.sh`(雖名為 android,實為三平台版本號 manager)。它會:
-1. `versionCode +1`(Play Store 規則:嚴格遞增,跟 versionName 無關)
-2. 視 flag bump `versionName`(`--version-name 1.0.1` 或 `--bump-patch`)
-3. Android build + 上傳 Play Console internal track
-4. (可選)commit + push + prepend CHANGELOG.md
-
-**iOS-only 快速路徑**:如果這次只發 iOS、不想白等 5–10 min Android build,可以手動只改兩處(因為 `release_android.sh` 沒有 `--skip-build` flag):
-1. `/VERSION` ← 寫新 versionName(例 `1.0.1`)
-2. `/android/app/build.gradle` 第 20–21 行 ← `versionCode +1` 並把 `versionName` 對齊 VERSION
-
-然後直接跑 `tools/build_ios.sh`(它會用 `agvtool` 把 VERSION + versionCode 寫進 Xcode project)→ `tools/upload_testflight.sh`。下次三平台一起發再用 `release_android.sh` 補 Android。
-
-iOS 版本號是**衍生**的:`build_ios.sh` 跑時用 `agvtool` 從 VERSION + build.gradle 寫進 Xcode project,**不要自己 `agvtool` 去戳 iOS 那邊**,會被下次 build 覆寫。
-
-## iOS code signing — 機器本地狀態(別人 checkout 不會有)
-
-App Store / TestFlight build 需要的 cert + provisioning profile **不在 git**,只存在這台 Mac 的 keychain 跟 Xcode UserData。換機器或 keychain 被清就要全部重生一次。session 記錄如下,給未來 build 1.0.2 / 1.0.x 不必再 debug 一次:
-
-| 物件 | 識別 | 哪裡 |
-|---|---|---|
-| Apple ID(Xcode + ASC) | `linus213@hotmail.com` | Xcode → Settings → Accounts |
-| **Team ID** | **`ALGJXG7K45`**(Team name 是 "Chih-Wei Lee Developer Team") | 寫在 `ios/App/App.xcodeproj/project.pbxproj` 的 `DEVELOPMENT_TEAM` |
-| Distribution cert | `Apple Distribution: Chih-Wei Lee (ALGJXG7K45)`,SHA-1 `CCB67887067CB9AEB87CE388C818AC136D2B8756` | login.keychain(`security find-identity -p codesigning -v`) |
-| Distribution profile | name `eduRPG App Store`,UUID `03c652ec-bc46-4cc0-8747-75f534c3a377`,2027-05-28 過期 | `~/Library/Developer/Xcode/UserData/Provisioning Profiles/` |
-| ASC API key(altool + xcodebuild 用) | KEY_ID 在 `APP_STORE_CONNECT_API_KEY_ID` env,.p8 在 `~/.appstoreconnect/private_keys/AuthKey_*.p8` | 這個是入 env,跨 session 都在 |
-
-**`exportOptions.plist` 用 manual signing**(不是 automatic):因為現有 ASC API key 的 role 不夠 App Manager,跑 automatic signing 時 cloud-signed flow 會踩 `Cloud signing permission error`。manual 直接吃 keychain cert + 上面那個 profile name。**未來把 ASC key 升成 App Manager 後可以改回 automatic,profile 名 + cert 名都可以拿掉。**
-
-### Cert subject 的坑(讀錯一次了)
-
-`security find-identity` 顯示 `"Apple Development: Chih-Wei Lee (6M5T9ZY2V6)"`,但**括號裡的 `(6M5T9ZY2V6)` 不是 team ID,是個人 developer member ID**。真 team ID 在 cert subject 的 OU 欄位(`OU=ALGJXG7K45`)。設 `DEVELOPMENT_TEAM` 要用 OU 那個,不是 CN parens。確認指令:
-```bash
-security find-certificate -c "Apple Distribution" -p ~/Library/Keychains/login.keychain-db | openssl x509 -noout -subject
-```
-
-### 如果 cert / profile 全沒了(新 Mac、keychain 被清)
-
-完整 recovery 路徑(這次 session 走過,踩過所有雷):
-1. Xcode → Settings → Accounts → 登入 `linus213@hotmail.com`(team 自動出現)
-2. 選 team → Manage Certificates → `+` → **Apple Distribution**(不是 Apple Development),自動進 login.keychain
-3. https://developer.apple.com/account/resources/profiles/list → `+` → Distribution / App Store Connect → bundle id `org.edurpg.app` → 勾上面建的 Distribution cert → Generate → Download
-4. 雙擊 `.mobileprovision`(或 cp 到 `~/Library/Developer/Xcode/UserData/Provisioning Profiles/`)
-5. **profile name 跟 `tools/exportOptions.plist` 的 `provisioningProfiles` 對應值要一致**(目前是 `eduRPG App Store`),不一樣的話改 plist 或重命名 profile
-
-跑 `tools/build_ios.sh && tools/upload_testflight.sh` 應該就過了。
-
-## Restart / deploy — use the scheduled tasks, not raw scripts
-
-There are TWO Windows Scheduled Tasks pre-registered (run with `Start-ScheduledTask <name>`, no UAC prompt):
-- `EduRPGRestartProdOnly` — only restarts prod (3005/3010/3020 + Cloudflare tunnel). **This is the default for daily promote.**
-- `EduRPGRestartStack` — restarts dev + prod (use only when both are broken).
-
-Direct invocation of `restart_prod_only.ps1` / `restart_dev_stack.ps1` triggers UAC. Avoid.
-
-**Before any prod restart**, check live multiplayer sessions — `SessionRunner` state is in-memory and is lost on restart:
-```powershell
-$key = (Select-String -Path E:\AI_Workbench_Data\edurpg.worktrees\stable-3005\backend\.env -Pattern '^ADMIN_API_KEY=').Line.Split('=')[1]
-(Invoke-WebRequest http://localhost:3020/api/admin/quiz/live-count -Headers @{ 'x-admin-key' = $key } -UseBasicParsing).Content
-```
-`count > 0` → stop and ask the user before restarting.
-
-Promote flow: commit on `master` → `git push origin master` → in `stable-3005` worktree `git fetch && git reset --hard origin/master` → `Start-ScheduledTask EduRPGRestartProdOnly`. **Also `git push origin stable-3005` afterwards** (master alone isn't enough — see `feedback_promote_push_stable3005.md`).
-
-Logs: `tools/logs/prod-backend.log`, `tools/logs/dev-backend.log`, `.last-restart-transcript.log`, `.last-restart-marker`.
-
-## Worktree topology — dev vs prod are separate file trees
-
-```
-E:\AI_Workbench_Data\edurpg\                              ← DEV (master branch)
-E:\AI_Workbench_Data\edurpg.worktrees\stable-3005\        ← PROD (stable-3005 branch)
-```
-
-Both share PostgreSQL but have separate `node_modules` and own `backend/.env` / `admin/.env`. Never edit code in `stable-3005/` — it's overwritten by `git reset --hard` on every promote. Verify a listener is in the right tree by inspecting its cmdline (see `OPERATIONS.md` §1.3.1).
-
-DB split (since 0.3.77): dev backend uses `edurpg_dev_local`, prod uses `edurpg_dev`. Migrations are applied to both via `prisma migrate deploy` during the respective restart.
-
-## 補跑單字語音 cache（戰鬥 long-press TTS）
-
-完整背景看 [[feedback-battle-tts-no-duck]] 跟 [[project-tts-prewarm-coverage]]，這裡只記操作指令。
-
-**何時要補跑**：
-- 加了新題庫（新 lesson JSON、新 vocab_words 列）
-- 用戶回報某些字 tap 沒聲音
-- 想驗證 cache 完整度
-
-**怎麼跑**（在 repo root）：
-
-```bash
-# 1. 看現況：哪些 group 缺多少字
-node backend/scripts/prewarm_battle_word_tts.cjs --dry-run | head -8
-
-# 2. 補產：無參數 = 跑全集，idempotent 跳過已產的，只補 missing
-node backend/scripts/prewarm_battle_word_tts.cjs
-
-# 範圍限定（rarely needed; 全集 < 1 分鐘掃完缺的 50 字以內）
-node backend/scripts/prewarm_battle_word_tts.cjs --chapter-only 1
-node backend/scripts/prewarm_battle_word_tts.cjs --chapter-range 2-20
-node backend/scripts/prewarm_battle_word_tts.cjs --lesson-prefix en-toeic-,en-hanlin-j2-
-node backend/scripts/prewarm_battle_word_tts.cjs --daily-limit 16000   # 守 F0 日均額度
-```
-
-**輸出位置**：`public/assets/audio/tts/_word/{sha1(text)}.mp3` ← root public/，不是 backend/public/。Vite proxy + express.static 已 wire 好，prod web (`https://edurpg.org/assets/audio/tts/_word/...`) 直接可服。
-
-**前端怎麼吃**：`src/scenes/BattleScene.ts` `speakWordTts()` 自動算 sha1 + 抓 mp3。沒 cache → 安靜不出聲（**故意不 fallback 到 speechSynthesis**，因為 iOS 那玩意會 duck BGM）。
-
-**成本參考**：3,649 distinct words 全集 ≈ NT$12 一次性。Azure F0 免費 tier 500K chars/月，跑全集只用 ~25K chars = 5%，遠超必要安全範圍。
-
-**Snapshot 2026-06-23**：3,649 字 100% cached、43 MB on disk。下次只需要為新增題庫補產，幾分鐘搞定。
-
----
-
-## 🟥 Bundled static assets in Phaser — 一律用相對路徑，不要 prefix `${API_BASE}`
-
-> 反覆風險：新場景的 `load.image / load.spritesheet / load.atlas` 用 `${API_BASE}/assets/...` 是 silent killer。
-> 一上 iOS（Capacitor WKWebView）就會半壞：`load.image` 跨 origin 還能容忍、`load.spritesheet` 走 fetch+canvas
-> 需要 CORS header（prod 沒設）→ 整批 spritesheet 安靜失敗，落回靜態圖。Web 端跑得好好的，iOS 才壞。
-
-**規則**：任何 `public/assets/...` 底下的檔案（會 bundle 進 IPA 的靜態檔），Phaser loader 都用**相對路徑**：
-
-```ts
-// ❌ 壞：iOS spritesheet 安靜失敗
-this.load.spritesheet(key, `${API_BASE}/assets/storymode/boss/anim/ch01_idle.png`, {...});
-
-// ✅ 對：web 解析成 https://edurpg.org/...、iOS 解析成 capacitor://localhost/... → 從 bundled IPA 讀
-this.load.spritesheet(key, `assets/storymode/boss/anim/ch01_idle.png`, {...});
-```
-
-`${API_BASE}` / `VITE_API_BASE` 只用在 `/api/...` 的 backend fetch，**不要碰 asset 路徑**。送 iOS / Android build 前 grep guard：
-```bash
-grep -rE 'API_BASE.*assets/|VITE_API_BASE.*assets/' src/  # 應該回 0
-```
-
-**iOS 本地測一律走 `tools/build_ios.sh`，不要直接 `npm run build`**：build_ios.sh 才會設 `VITE_API_BASE=https://edurpg.org` env、跑 `cap sync ios`、把版本號同步進 Xcode project。直接 `npm run build` 漏這條 → bundle 的 `/api/...` 變相對路徑 → iOS 開 App 登入就炸 `"The string did not match the expected pattern"`（fetch 拿到 SPA index.html、JSON.parse 失敗）。如果只是想試新 dist 不重 archive，最小組合：
-```bash
-VITE_API_BASE=https://edurpg.org VITE_BACKEND_URL=https://edurpg.org npm run build && npx cap sync ios
-```
-然後 Xcode ▶ Run。
-
-Root cause 完整紀錄：`docs/feedback/` 或 memory `feedback_storyart_capacitor_relative_paths`。
-踩過 commit：build 16 送審前夜 storyArt.ts 4 個 URL builder 全部寫成絕對 https。
-
----
-
-## Frontend → backend networking — never hardcode localhost
-
-All `fetch` calls **must** use a relative path so the Vite proxy can route them:
-- prod: `https://edurpg.org/api/*` → Cloudflare tunnel → `:3005` Vite preview → proxy → `:3020` backend.
-- dev:  `:3105` Vite → proxy → `:3120` backend.
-- The Vite proxy also forwards `/socket.io` (with `ws:true`) and `/uploads`.
-
-```ts
-const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? '';   // ← MUST be ''
-fetch(`${API_BASE}/api/...`, { credentials: 'include' });
-```
-
-A hardcoded `'http://localhost:3020'` fallback works on the developer's desktop but silently breaks on phones / over the Cloudflare tunnel (DNS fails, code falls into a try/catch, user sees default/empty data without an error). Grep guard: `grep -rn "?? 'http://localhost:" src/` should always return zero hits.
-
-## Admin auth — two-layer
-
-1. Backend `/api/admin/*`: requires `x-admin-key: <ADMIN_API_KEY>` header. Vite proxy does **not** forward this header, so `https://edurpg.org/api/admin/*` always returns 403 — that's intentional. Only `admin/server.js` (loopback) and local scripts can call admin endpoints.
-2. Admin UI on `:3010`: bcryptjs login + HMAC-signed cookie (12h, HttpOnly, SameSite=Strict). `admin/.env` must have `ADMIN_USERNAME` (≠ `'admin'`), `ADMIN_PASSWORD_HASH`, `ADMIN_SESSION_SECRET`. Cookie version is derived from sha256(password hash) so changing the password invalidates all old cookies (stateless revocation).
-
-Admin server binds 127.0.0.1 only — never expose to LAN.
-
-## 金流 / ECPay 綠界 — 狀態與待辦（2026-06-06）
-
-兩處金流都已串好並實測入帳成功(`backend/src/routes/payment.ts` + `backend/src/lib/ecpay.ts`):
-
-- **遊戲內**(edurpg.org,登入後) → `/api/payment/orders`(單包)、`/orders/multi`、`/orders/educational`,訂單綁登入帳號。
-- **products.html**(網頁儲值,免登入) → 輸入玩家 8 碼**推薦碼** → `/api/payment/web-topup/resolve`(預覽收款人)→ 確認「儲值給 〇〇〇」→ `/api/payment/web-topup` 建單刷綠界 → notify 把鑽石撥入該推薦碼帳號。此路徑刻意免登入(只會加值、不能扣款)。
-- 教育包 / 月卡在 products.html 都換算成鑽石(`EDU_RATE_PER_TWD = 3.2`💎/NT$),玩家再在遊戲內用鑽石開月卡(`subscription.ts` `payWith:'diamonds'`)。
-- 後台稽核:admin `index.html` → 💎 金流頁,有 email 篩選 + 撥入前/後鑽石餘額(由 `currency_transactions` 累計推算)。
-
-**正式商店代號 `3499022`(金流已申請通過),`.env`:`ECPAY_ENV=prod`。**
-
-### ⚠️ 電子發票尚未開通 — 待辦進度
-
-綠界**電子發票是跟金流分開的加值服務**,需要**公司營業登記** + 財政部字軌核配 + 後台「電子發票系統 → 資料管理與維護 → 字軌與配號設定」(B2C、字軌類別 **07 一般稅額**,對上 code 送的 `InvType='07'`)。**目前使用者尚無公司營業登記,無法申請。**
-
-未開通前若送 `InvoiceMark='Y'`,綠界收銀台會以錯誤碼 **1200005「無商品數量」**擋下整筆交易。因此整合金流發票已用 env flag 關閉:
-
-- `backend/.env` → `ECPAY_INVOICE_ENABLED=false`(預設關;`backend/src/lib/ecpay.ts` 的 `ecpayInvoiceEnabled()` 控制 `buildAioCheckoutForm` 是否帶發票欄位)。
-- 涵蓋全部結帳路徑(orders / multi / educational / web-topup)。
-
-**進度追蹤 — 之後要做的事(完成電子發票申請後):**
-1. 公司營業登記辦好 → 向綠界申請電子發票加值服務(電話 02-2655-1775)→ 簽約 + 財政部授權。
-2. 綠界後台設好 B2C 字軌與配號(07 一般稅額)。
-3. 把 `backend/.env` 的 `ECPAY_INVOICE_ENABLED` 改成 `true` → 重 build backend + 重啟 prod。**code 不必再改。**
-4. 過渡期(尚未開通)若需開發票,用綠界後台「B2C 電子發票 → 發票新增作業」手動補開。
-
-## Google API / 模型(用到哪些、在哪、退役狀態）
-
-所有 Gemini model 走 REST `generativelanguage.googleapis.com/v1beta/models/<model>:generateContent`(`backend/src/lib/geminiImageGen.ts`),model 名存在 DB provider row,admin 可用 `endpoint` 或 `notes` 的 `model=...` 逐列覆寫,下面是 fallback 預設值:
-
-| 用途 | 檔案(預設) | 預設模型 | API |
-|---|---|---|---|
-| 出題配圖(quiz 圖片生成) | `lib/geminiImageGen.ts:58` | `gemini-2.5-flash-image` | GenAI generateContent(回 inline image) |
-| 文字 LLM(三檔 tier) | `lib/llmText.ts:37-39` | `gemini-2.5-flash-lite` / `-flash` / `-pro` | GenAI generateContent |
-| Vision(圖片判讀) | `lib/vision.ts:149,220` | `gemini-2.5-flash` | GenAI generateContent |
-| 圖片審核(主)| `lib/imageModeration.ts:155` | `gemini-2.5-flash` | GenAI generateContent |
-| 圖片審核(備援,NSFW)| `lib/imageModeration.ts:266` | — | **Google Vision API**(`GOOGLE_VISION_API_KEY`,fail-open) |
-
-**Imagen 4 退役(2026-08-17)不影響本專案** — 全部走 `gemini-2.5-*`,無任何 `imagen-4.0-*` 端點。Google 通知點到 project `gen-lang-client-0836655205` 是以 GCP project 為單位偵測(同 key 下別的 app/手動測試曾打過 Imagen 4)。詳見跨專案盤點:cleo 的一次性頭像腳本已從 `imagen-4.0-fast` 遷到 `gemini-3.1-flash-image`;Ai_Stock_Agent 不受影響。
+- Frontend (`/`): `npm run build`（`tsc && vite build` → `dist/`）、`npm run dev`。
+- Backend (`backend/`): `npm run build`（`tsc`）、`npm start`、`npm test`；單一測試 `npx vitest run __tests__/<file>.test.ts -t "<name>"`；一次性診斷腳本 `node backend/scripts/<name>.cjs`。
+- Prisma（在 `backend/` 內）：`npx prisma generate` / `npx prisma migrate deploy`（PROD）/ `npx prisma migrate dev --name xxx`。
+- Admin (`admin/`): `npm start`（`PORT` env 決定 3010 / 3011）。
+
+## 版本號（細節 `docs/runbooks/release-and-ios-signing.md`）
+
+Web / Android / iOS 共用 `/VERSION`（versionName）+ `android/app/build.gradle` 的 `versionCode`。**不要手動改**，用 `tools/release_android.sh`（三平台版本號 manager）；iOS 版號由 `tools/build_ios.sh` 衍生，別自己 `agvtool`。`package.json` 的 `"version"` 跟對外版號無關。
+
+## 🟥 紅線（違反會在手機 / iOS / 公網上安靜壞掉）
+
+- **Frontend fetch 一律相對路徑**：`const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? '';`（必須是 `''`）。
+  Hardcode `'http://localhost:3020'` 在桌機正常、手機 / tunnel 上靜默失敗。Guard：`grep -rn "?? 'http://localhost:" src/` 要 0。
+- **Phaser 載 `public/assets/...` 一律相對路徑，不要 prefix `${API_BASE}`**（iOS WKWebView 的 spritesheet 會靜默失敗）。
+  Guard：`grep -rE 'API_BASE.*assets/|VITE_API_BASE.*assets/' src/` 要 0。細節見 `src/CLAUDE.md`。
+- **iOS 本地測一律走 `tools/build_ios.sh`**，不要直接 `npm run build`（漏 `VITE_API_BASE` → 登入炸 `"The string did not match the expected pattern"`）。
+- **每個新 Phaser 場景 `create()` 都要 `setSceneBg(...)` + `setupResponsiveCamera()`**，否則手機邊條露出上個場景背景。完整解法見 `src/CLAUDE.md`。
+- **背包 / 物品欄全遊戲只有一個共用元件** `src/ui/LexiconInventoryOverlay.tsx`，不要再做第二份。
+- **`.sql` migration 一律 UTF-8 無 BOM**（BOM → P3018，要 `prisma migrate resolve --rolled-back` 才救得回）；`.ts/.tsx/.json/.md` 也無 BOM。
+- **Admin auth**：backend `/api/admin/*` 要 `x-admin-key` header，Vite proxy 不轉發（公網 403 是故意的）；admin server 只 bind 127.0.0.1，不要暴露到 LAN。
+- **新匯入的題庫在「選擇關卡」看不到** → 九成是 `bank_accesses` 沒授權，不是篩選器。先看 `backend/CLAUDE.md`，**絕不要跑 `migrate-existing-players-onboarding.ts`**（會清空全部人的授權）。
 
 ## High-level architecture
 
-**Frontend (`src/`)** — Phaser 4 game with React overlays:
-- `main.ts` registers all Phaser Scenes; `BootScene` → `TitleScene` is the entry flow.
-- `scenes/` — game screens (Battle, Cute, Result, Multiplayer, etc).
-- `systems/` — pure-logic singletons (VocabManager, BattleSystem, PlayerManager, ReviewSystem, AudioManager, SpellEffects, TutorialManager). Persisted state lives in localStorage; cloud sync via backend `/api/save`.
-- `services/` — auth / cloudsave / presence / session / tts HTTP clients (use the relative-path convention above).
-- `ui/` — React overlays mounted on top of the Phaser canvas (settings, store, leaderboard, etc).
-- `i18n/` — 7 locales (zh, zh-cn, en, ja, ko, vi, ar). Always go through `t('key.path')`; missing keys fall back to English. `tools/sync_i18n.cjs` backfills missing keys from zh.
+- **Frontend (`src/`)**：`main.ts` 註冊所有 Scene（`BootScene` → `TitleScene`）；`scenes/` 遊戲畫面；`systems/` 純邏輯 singleton（VocabManager、BattleSystem、PlayerManager…，localStorage + `/api/save` 雲端同步）；`services/` HTTP client；`ui/` React overlay；`i18n/` 7 語系，一律 `t('key.path')`，缺 key fallback 英文（**en 必須 100%**，否則 App Store 退件）。
+- **Backend (`backend/src/`)**：`index.ts`（CORS 只允許私有 LAN、1000/15min rate limit、`trust proxy 'loopback'`、socket.io 共用 3020）；`routes/*.ts` 每檔一個功能掛 `/api/*`；`quiz/` 多人問答（`sessionRunner.ts` 是記憶體狀態）；`lib/` 領域模組；`middleware/auth.ts` 單裝置登入（登入即撤銷其他 session）；`prisma/schema.prisma` ~60 models。
+- **Admin (`admin/`)**：`server.js` 代理 `/api/admin/*`（自動帶 `x-admin-key`）+ 服 `admin/public/` 靜態 HTML。
 
-**Backend (`backend/src/`)**:
-- `index.ts` — Express setup, CORS allowlist (private LAN only — public domains rejected), 1000/15min global rate limit (skips GET in prod, disabled in dev), `trust proxy 'loopback'` (only loopback proxies trusted). Wraps Express in `http.Server` so socket.io shares port 3020.
-- `routes/*.ts` — REST endpoints, mounted under `/api/*`. Each file is one feature (auth, save, run, leaderboard, vocab, exam, assignment, teacherBanks, payment, shop, parent, family, presence, quiz, quizAutogen, …).
-- `quiz/` — multiplayer quiz Phase 6: `quizWs.ts` (socket.io namespace), `sessionRegistry.ts` (lifecycle + crash recovery), `sessionRunner.ts` (in-memory live state), `recurringActivityCron.ts` (admin-managed daily activities), `autogenGenerators.ts` (AI-generated questions, three types).
-- `lib/` — domain modules: prisma client, mailer + i18n templates, ECPay, Azure TTS / pronunciation, Gemini image gen, image moderation (Sightengine/Google Vision, fail-open), anti-cheat (`runAntiCheat`), stamina, mastery, subscription/expiry cron, progressEmail cron, classCode, referral, etc.
-- `middleware/auth.ts` — single-device session policy: every login revokes all the user's other active sessions.
-- `prisma/schema.prisma` — ~60 models. Migrations in `prisma/migrations/`.
+## UI 慣例 / 瀏覽器
 
-**Admin (`admin/`)** — `server.js` is a thin Express app that proxies `/api/admin/*` to backend (auto-injecting `x-admin-key`) and serves static HTML pages from `admin/public/`. Pages are vanilla HTML + fetch.
-
-## Encoding rules
-
-Console default codepage on this box is 950 (Big5), but **PowerShell 7.6+ (`pwsh.exe`) is the canonical runner** for project scripts.
-
-- **`.ps1` files: UTF-8 *no BOM***, executed via `pwsh.exe`. PS 7+ reads UTF-8 source by default so Traditional Chinese in comments / `Write-Host` works without BOM. Do NOT run them with `powershell.exe` (PS 5.1) — it parses .ps1 as the system ANSI codepage (cp950) and mojibakes the Chinese at parse time, before any `[Console]::OutputEncoding` line gets a chance to run. Write with `[System.IO.File]::WriteAllText($p, $c, (New-Object System.Text.UTF8Encoding $false))`. The two Scheduled Tasks (`EduRPGRestartStack`, `EduRPGRestartProdOnly`) are registered with `Execute = C:\Users\linus\AppData\Local\Microsoft\WindowsApps\pwsh.exe`; if you re-register, keep that path.
-- **`.sql` migrations: UTF-8 *no BOM***. Postgres rejects BOM (`syntax error at or near "?"`) and `prisma migrate deploy` fails with P3018. Recovery requires `prisma migrate resolve --rolled-back <name>`. Write with `[System.IO.File]::WriteAllText($p, $c, (New-Object System.Text.UTF8Encoding $false))`.
-- **`.ts` / `.tsx` / `.json` / `.md`: UTF-8 no BOM** (Vite/TS/Prisma defaults).
-
-## Things that are easy to break
-
-- **Don't `taskkill /F /IM node.exe`** — kills prod backend on 3020 too. Use `Stop-Process -Id <pid>` after locating via `Get-NetTCPConnection -LocalPort <port>`.
-- **`ts-node-dev` and `npm` leave wrapper PIDs without listening ports.** They hold a lock on `backend/node_modules/.prisma/client/query_engine-windows.dll.node`. After `restart_dev_stack.ps1 -StopOnly`, always `Get-Process node` and kill stragglers before rebuilding (`prisma generate` will otherwise fail with EPERM).
-- **PowerShell wrapper splat must use a hashtable, never `$args`** — `$args` is an automatic positional array and binds to `param()` order (e.g. `'-NoDb'` lands in `[int]$ProdFrontendPort`). Use `$h = @{ NoProd = $true; … }; & $inner @h`.
-- **Azure provider `endpoint` field often stores a region code** (e.g. `'eastasia'`) not a URL. Adapters must build `https://${region}.{tts|stt}.speech.microsoft.com/...` themselves; don't pass the value into `fetch()` directly or it throws `TypeError: Invalid URL`.
-- **Don't restart prod without confirmation** unless explicitly authorized for that turn. The standing-authorization phrases are listed in `Develop_MEMORY.md` §2.4. Frontend hot-reload / idempotent migrations are exempt.
-
-## 💡 改 UI / 寫新場景前先讀 `docs/feedback/`
-
-`docs/feedback/` 是 **bug pattern library** — 每條都至少撞過一次（很多是反覆撞）。
-寫新 Phaser scene、改既有 UI、產圖前，**先看 [docs/feedback/README.md](docs/feedback/README.md) 索引**找對應分類。
-
-**最高頻雷區 = 螢幕邊界 / canvas 縮放 / UI 跨設備位置**（手機跑版、桌面 OK 但手機壞、按鈕視覺跟點擊熱區錯位）—— 幾乎每次做新 UI 都會撞。看：
-- [feedback_phaser_scene_scaling.md](docs/feedback/feedback_phaser_scene_scaling.md) — 新場景沒設 setSceneBg/setupResponsiveCamera 的標準解法
-- [feedback_phaser_canvas_to_world_pattern.md](docs/feedback/feedback_phaser_canvas_to_world_pattern.md) — 跨設備 UI 位置必須抄 BattleScene 完整公式
-- [feedback_phaser_image_aspect_distortion.md](docs/feedback/feedback_phaser_image_aspect_distortion.md) — 背景圖 setDisplaySize 必須保持比例
-
-下面這節（Phaser 場景縮放）是精簡警示，**完整 root cause 跟更多 case 在 `docs/feedback/`**。
-
-## Phaser 場景縮放與背景填滿 — 老問題，每個新場景都要做（別再犯）
-
-> 反覆出現的 bug：新場景的背景沒有放大填滿整個螢幕，手機上左右（或上下）露出**前一個場景的背景圖**
-> （例：單人關卡地圖左右露出標題畫面的綠樹草地）。根因與固定解法如下，**寫新場景時照抄**。
-
-**為什麼會這樣**：遊戲用固定設計解析度 `1280×720`（`config/constants.ts` 的 `GAME_WIDTH/HEIGHT`）+
-Phaser `Scale.FIT`（`main.ts`）。FIT 會在比例不符的手機上**留信箱黑邊**。那些黑邊由一個 full-viewport 的
-DOM 層 `#scene-bg`（`position:fixed; inset:0`）墊在 canvas 後面顯示。**`#scene-bg` 是全域共用的**——
-若新場景沒去設定它，就會殘留**上一個場景**的背景圖從邊條露出來。
-
-### 自動偵測畫面邊界的機制（已經內建、全域，**不要重造一套**）
-
-「偵測使用者螢幕上下左右邊界 → 換算縮放比例」這件事**已經做好了**，分三層；這個邊界 bug 被修很多次，
-都不是因為偵測壞掉，而是**新場景沒去消費**這套既有機制。修法永遠是讓新場景照下面消費，**不是再寫一套偵測**。
-
-| 層 | 在哪 | 做什麼 |
-|---|---|---|
-| HTML | `index.html`：`viewport-fit=cover` + `env(safe-area-inset-*)` → `--app-safe-*` CSS 變數；`#scene-bg`、`#game-container`（sized to `--app-vw/--app-vh`） | 把實體視窗大小 + iOS 瀏海/導覽列安全區暴露成 CSS 變數 |
-| 啟動 | `main.ts:69` `initViewportManager()`（`src/systems/ViewportManager.ts`） | 量 `visualViewport` 寬高 + 4 邊 safe-area → 寫進 `--app-vw/--app-vh/--safe-*`；監聽 resize/orientation/visualViewport 變更即時更新 |
-| 登入 | `AuthOverlay.tsx:251` `saveDeviceMetaToDB()` | 登入成功後把該裝置的 vw/vh/safe-area/DPR/螢幕尺寸 POST 到後端存檔（除錯用） |
-| 每場景 | `setupResponsiveCamera()`（見下方步驟 2） | 讀 `visualViewport` → `setGameSize` + **換算 zoom 比例** `min(w/1280, h/720, 1.0)` 填滿並置中 |
-
-> 換言之：邊界偵測是「全域已備、開機就跑」；**每個 Phaser 場景要做的只是步驟 1+2 去用它**。看到邊界又露餡，
-> 先檢查那個場景漏了 `setSceneBg` / `setupResponsiveCamera`，不要去動 ViewportManager。
-
-**每個 Phaser 場景的 `create()` 都必須做這兩件事**（缺一就會踩雷）：
-
-1. **`setSceneBg(url | null)`**（`src/lib/sceneBg.ts`）—— 設定 / 清掉那個全幅 DOM 背景。
-   傳該場景自己的背景圖 URL（`center/cover` 會自動填滿）；沒有圖就傳 `null`（邊條變純黑 `#000`，
-   乾淨、可接受）。**忘了呼叫 = 上個場景的背景圖從邊條露出**（就是這個老 bug）。
-2. **撐滿視窗 + 置中縮放**：把 canvas 撐到裝置視窗，再把 `1280×720` 設計格 zoom-to-fit 並置中——
-   照抄 `StudyTimerScene.setupResponsiveCamera()`（`BattleScene` / `ResultScene` 同款）：
-   ```ts
-   this.scale.setGameSize(vw, vh);                 // canvas = 裝置視窗（vw/vh 來自 visualViewport）
-   this.cameras.main.setSize(w, h);
-   const z = Math.min(w / GAME_WIDTH, h / GAME_HEIGHT, 1.0);
-   this.cameras.main.setZoom(Math.max(0.4, z));
-   this.cameras.main.centerOn(GAME_WIDTH / 2, GAME_HEIGHT / 2);
-   // 監聽 this.scale.on('resize', …) 重套；SHUTDOWN 時 setGameSize(GAME_WIDTH, GAME_HEIGHT) 還原
-   ```
-   這樣設計格內既有的 `GAME_WIDTH/HEIGHT` 座標**全部仍有效**（置中縮放，不必改座標）。
-
-**排版輔助**：需要貼齊邊／角、避開 iOS 瀏海安全區時，用 `src/lib/layout.ts` 的 `getViewport(this.scale)`
-+ anchor helper（`topRight` / `bottomCenter` / `center` …），不要再手算 `GAME_WIDTH * 0.85` 這種座標。
-安全區資訊由 `ViewportManager`（`src/systems/ViewportManager.ts`，登入時偵測螢幕上下左右邊界）寫進
-CSS 變數供讀取。
-
-> 自我檢查：新場景的 `create()` 有沒有 `setSceneBg(...)`？手機上轉到該場景，左右上下還會不會看到別的
-> 場景的圖？會 → 八成漏了上面兩步。已知正解範例：`BattleScene` / `StudyTimerScene` / `ResultScene` /
-> `StoryMapScene`。
-
-### 捲動場景的固定 UI「看得到、按不到」（Phaser 坑，已踩過）
-
-可水平/垂直**捲動的場景**（如 `StoryMapScene` 地圖）若用 **`camera.scrollX/scrollY` 捲相機**，又把
-header/返回鈕/分頁等固定 UI 設 **`setScrollFactor(0)`**，則**相機一旦捲動（scroll≠0），那些固定 UI 的
-「點擊判定區」會被相機位移帶偏**——按鈕畫面在原位、但 tap 熱區跑掉，變成「看得到卻按不動」。
-
-**正解：不要捲相機，改捲世界容器。** 把場景內容放進一個 `Container`（worldLayer），拖曳/慣性/置中
-都改 `worldLayer.x = -scroll`（相機永遠停在 `scrollX=0`）。節點等內容在容器裡照樣移動且可點；固定 UI
-因為相機沒捲，判定區正確、按得動。
-
-```ts
-// ❌ 壞：捲相機 + scrollFactor(0) 固定 UI → 固定 UI 點不到
-this.cameras.main.scrollX = target;
-// ✅ 對：相機不動，捲世界容器
-this.worldLayer.x = -target;   // scroll = -worldLayer.x；node hit areas 跟著容器走，固定 UI 不受影響
-```
-
-> 自我檢查：場景會捲動嗎？有沒有 `setScrollFactor(0)` 的按鈕？若用 `camera.scrollX` 捲 → 改成捲容器。
-> 正解範例：`StoryMapScene`（`installDragControls` / `update` / `focusScrollX` 全走 `worldLayer.x`）。
-
-### Phaser 開發踩過的坑（彙整 — 寫新場景 / 改既有場景前先掃一遍）
-
-下列每條都至少踩過一次、有對應 commit。**寫新 Phaser code 前快速 scan 一遍**比事後 debug 省很多時間。
-
-1. **動態載圖一定要 listener**：`load.image(key, url)` 之後**立刻** `textures.exists(key)` 永遠 false（async）。沒 listener → 物件第一次 render 永遠空白。修法：
-   ```ts
-   this.load.image(key, url);
-   this.load.start();                              // idempotent
-   const qSnap = this.questionsDone;
-   this.load.once(`filecomplete-image-${key}`, () => {
-     if (this.scene.isActive() && this.questionsDone === qSnap) this.updateMonsterVisual();
-   });
-   ```
-   別用 `!this.load.isLoading()` 當 guard，會漏 enqueue。詳見 memory `feedback_phaser_async_texture_race`。
-
-2. **`scene.start` 復用 instance、Phaser 銷毀 GameObject 但 field 不會清**：所有「懶建立」的 GameObject field（`if (!this.foo) this.foo = add.xxx()`）都要在 `init()` 重置回 `undefined`。否則下次進場景 `if (this.foo)` 為 true、操作 destroyed sprite → 卡死。範例 BattleScene 的 `monsterImage` / `bossChargeBar` / `wrongAnswerCard`。
-
-3. **`setDisplaySize(w, h)` 別獨立算 w/h**：寬高 scale 不同會把圖拉變形（圓變橢圓）。背景圖用 `background-cover` 邏輯：`scale = Math.max(wNeed/texW, hNeed/texH)`，套到兩個維度。
-
-4. **跨設備 UI 位置抄 `BattleScene.canvasToWorldX/Y` 完整公式**（含 `viewW = cam.width/zoom + viewLX = cam.scrollX + cam.width/2 - viewW/2`）。**不要簡化成 `scrollX + canvas/zoom`** — 桌面 zoom=1 看起來對，手機 zoom<1 就會偏。詳見 memory `feedback_phaser_canvas_to_world_pattern`。
-
-5. **camera 不捲動的場景不要 `setScrollFactor(0)`**：Phaser 4 + `centerOn` 設了非零 scrollX 後，render 跟 input hit-test 走的 transform 對 scrollFactor 處理不一致 → 按鈕「看得到按不到」/「按右下卻觸發」。要捲動內容就改 `worldLayer.x`，camera 自己保持 centerOn 不動。
-
-6. **`load.start()` 對空 queue 在 `create()` 裡會卡場景**：呼叫前先檢查 `this.load.list.size`，沒新檔別 start。已踩過（Boss 戰卡死）。
-
-7. **`tileSprite` 會重複貼**：要單張伸展不重複用 `add.image(...).setDisplaySize(w, h)`。
-
-8. **`#scene-bg cover` + canvas 內同圖 = 雙層接縫**：兩層獨立縮放永遠不對齊。擇一。
-
-9. **`getSourceImage().src` 可能回空字串**（HTMLImageElement 還沒 attach）。用靜態組合的 `/assets/...` URL 比較穩。
-
-> 自我檢查清單（寫新 Phaser scene 前過一遍）：
-> - [ ] `create()` 有 `setSceneBg(...)` 嗎？
-> - [ ] 有 `setupResponsiveCamera()` 嗎？UI 位置都用 `canvasToWorldX/Y(vp.safe... + N)` 嗎？
-> - [ ] 沒有 `setScrollFactor(0)`（除非 camera 真的會 scroll）嗎？
-> - [ ] 所有「懶建立」field 在 `init()` 重置了嗎？
-> - [ ] 動態 `load.image` 後有 `filecomplete-image-<key>` listener 嗎？
-> - [ ] 背景圖 `setDisplaySize` 兩維是同 scale 嗎？
-
-## UI 慣例 — 按鈕
-
-- **配色對比**：按鈕背景色與文字色必須有足夠對比，不可配色過於相近導致難以閱讀（例：淺灰底 + 白字、深藍底 + 黑字都不行）。
-- **圓角外框**：所有按鈕一律做成圓角，不要使用直角外框。Phaser 用 `graphics.fillRoundedRect` / `strokeRoundedRect`，React/Tailwind 用 `rounded-*` class。
+- **按鈕配色對比**要夠（淺灰底白字、深藍底黑字都不行）；**所有按鈕圓角**（Phaser `fillRoundedRect` / Tailwind `rounded-*`）。
 - 不要使用我Chrome裡面Oracle資料夾的bookmark裡面的URL。
 - 使用chrome瀏覽器的時候, 請使用linus94213@gmail.com這個account。
 
-## 背包 / 物品欄 — 全遊戲只有一個共用元件（別再做第二個）
+## Reference docs（需要時才讀）
 
-> 反覆踩雷：背包在遊戲裡有多個入口（主畫面、字靈防線選單、戰後結算…），曾經各自做了一份物品欄 UI，
-> 導致同一件事維護多份、改 A 漏 B（例：新加的防具/飾品 gear 只在其中一份顯示，另一份看不到）。
-
-**規則：所有「背包 / 物品欄」一律用唯一共用元件 `src/ui/LexiconInventoryOverlay.tsx`，不要再新增第二份背包 UI。**
-
-- 它自含：開啟時 `fetchEquipment` + `fetchCharEquipment` + 商店 HP 藥水(`/api/save/all`)，顯示
-  **消耗品 + 武器 + 副手 + 戒指(charEquipment) + 防具/飾品 gear**，6 級稀有度(史詩彩虹)，穿脫走各自 API，
-  同步 `playerManager.syncEquipment(...)`（含 gear）。props 只有 `{ onClose }`。
-- 目前三個入口都已掛它：`TitleScene.openBackpackOverlay()`（主畫面）、`LexiconMenu`（字靈選單）、
-  `LexiconSettlementOverlay`（戰後結算）。**新功能要動背包 → 改這一個檔，不要 copy 一份新的。**
-- **掛載位置**：一定掛在 **viewport 層**（`position:fixed` 直接在最外層），**不要**掛進有 `transform: scale()`
-  的縮放容器（如 LexiconMenu 的 1280×720 stage）內——否則元件內的 `vw` 響應式單位算的是 viewport、容器卻是
-  stage 座標，欄數會錯亂。範例：`LexiconMenu` 把它放在 stage `</div>` 之外、root 之內。
-- **格數別設上限**：grid 是 `auto-fill` 響應式欄 + 上下捲，要顯示「全部」物品。曾誤設 `cellCount = min(30,…)`，
-  武器+副手就 >30，把後面的 gear 整批擠掉沒渲染 → 一律 `Math.max(18, ceil(n/6)*6)`，不要封頂。
-
-### 待清理（多餘 code，找機會拿掉）
-- ~~`LexiconMenu` 內自帶的舊物品欄（state/builders/handlers/INV_ITEMS/RARITY_META）~~ → 已於 2026-06-28 移除，改用共用元件。
-- ~~`LexiconInventoryOverlay` 的 `INV_ITEMS` 假佔位資料 + `void INV_ITEMS`~~ → 已移除。
-- 穿脫的「slot/資格」判斷在 `LexiconInventoryOverlay` 與 `PlayerInfoPanel`(紙娃娃) 各有一份（兩者都呼叫
-  `equipGear/equipWeapon/equipOffhand`）。兩個是不同 UI（清單 vs 紙娃娃）可並存，但 slot 解析邏輯日後可抽共用 helper。
-
-## 產圖候選工作流程（FLUX 批量 → checkbox 預覽網頁挑選 → CSV）
-
-> 標準作法：要產一批遊戲美術（替換 emoji / 新場景素材等），**一律按下面流程**——
-> 用本機 ComfyUI FLUX 批量產**每素材多個變體**，做成 checkbox 預覽網頁讓使用者勾選保留哪些、匯出 CSV，
-> 我再依 CSV 去背入庫。**不要**自己選圖或只產單張就接進遊戲；候選要交給使用者挑。
-
-1. **產圖（本機 ComfyUI，不吃 AutoSprite 額度）**：靜圖走 Windows ComfyUI `192.168.11.76:8188`（Mac 從 LAN 連得到）。
-   寫 / 沿用一支產圖腳本（範本 `tools/gen_cuteworld.mjs`，仿 `tools/gen_comfyui.mjs`）：catalog 列 `{theme,slug,seed,desc}`，
-   **每素材換 N 個 seed 產 N 個變體**（預設 3），套全域 STYLE SUFFIX + **白底**（FLUX 無原生透明，事後 floodfill 去背），
-   輸出 `public/assets/<feature>/_raw/<theme>/<slug>_v<n>.png`。可用主題參數分批跑（背景），已存在的跳過。
-   FLUX prompt 規則見 memory [[feedback_flux_image_gen_prompts]]（英文、正向描述、FluxGuidance+cfg=1.0）。
-2. **預覽網頁（checkbox + CSV）**：跑 `tools/build_cuteworld_preview.mjs`（範本）掃 `_raw/` 產
-   `public/assets/<feature>/_preview/index.html`——每素材變體並排、可複選勾選、即時存 localStorage、按鈕匯出
-   `picks.csv`（欄位 `theme,slug,variant,checked`）。每多產一批就重跑刷新清單。
-3. **預覽伺服**：`python3 -m http.server 8777 --bind 0.0.0.0 --directory /Users/linus/edurpg`（已常駐一支服 repo root），
-   給使用者 `http://192.168.11.99:8777/public/assets/<feature>/_preview/index.html`（Mac + 同網段 Windows PC 皆可開）。
-   屬 LAN 內網存取，**不適用** cloudflared 公網那條「需本人同意」規則。
-4. **入庫**：使用者回 CSV 後，依 checked=1 的變體 → ImageMagick floodfill 去背（`docs/ASSET_GEN.md` §4）；
-   **不需透明的轉 jpg** 減檔；搬進 `public/assets/<feature>/`（去掉 `_v<n>` 與 `_raw/`）。Phaser 載入一律相對路徑。
-
-> 判準：靜圖 → 本機 ComfyUI；逐格動畫 spritesheet 才用 AutoSprite（吃 credits）。CSS/Phaser tween 套靜圖的「動」仍算靜圖。
-> 完整素材生成三管線（AutoSprite 動畫 / FLUX 靜圖 / Azure TTS）見 `docs/ASSET_GEN.md`。
-
-## 新增單字題庫（vocab bank）後「選擇關卡」選不到 — 別再重新研究一次
-
-> 反覆會踩的坑：透過 `POST /api/admin/vocab/import-json` 匯入一個新題庫到 `vocab_banks`/`vocab_words`
-> 後，遊戲內「選擇關卡」畫面**完全看不到這個新題庫**（不管 gradeCode/publisher 填得多標準）。
-> 2026-09-14 第一次踩雷 + 完整查明，記錄如下，之後不必再重新研究一次。
-
-### 「選擇關卡」畫面架構（先搞懂，才知道要查哪裡）
-
-- Scene（抓資料/邏輯）：`src/scenes/LessonSelectScene.ts`；React overlay（實際畫面）：
-  `src/ui/SelectLevelOverlay.tsx`。
-- **資料來源看有沒有登入**（`LessonSelectScene.loadLessonIndex()`）：
-  - **已登入**：打 `GET /api/vocab/banks`（`backend/src/routes/vocab.ts`），每個 bank 帶一個
-    `access` 欄位（是否有效存取權）。**前端接著 `.filter(b => b.access?.active === true)`
-    把沒有有效 access 的 bank 整批濾掉**，才組成候選清單。
-  - **未登入 / API 失敗**：改讀靜態 `public/data/lessons/index.json`，這條路徑沒有 access 檢查。
-- **年級/出版社篩選器選項是寫死陣列**（`LessonSelectScene.ts` 的 `TEXTBOOK_GRADES` / `publishers`
-  常數），不是動態從資料蒐集出現過的值。`gradeCode` 沒帶數字（如 `"ep"`）在
-  `backend/src/routes/admin.ts` 的 `gradeCodeToInt()` 會轉成 `grade=0`，`semesterCode` 不是
-  `"s2"` 一律轉成 `semester=1`；`grade===0` 的 bank 前端一律顯示成「國小／全年級」，對應篩選器的
-  「國小全」選項——**這條路徑不太會出錯**，新舊國小題庫在這幾個欄位上通常會自動對齊。
-
-### 真正的根因九成是這個：`bank_accesses` 表沒有任何一筆授權
-
-**這個專案的存取模式是「每個 bank 都要明確授權才會出現在已登入使用者的清單」，不是
-「免費/低價 = 自動所有人都能玩」。** 新匯入的 bank 在 `vocab_banks` 裡誕生時，`bank_accesses`
-一筆都沒有——所以不管 gradeCode / 篩選器 / unitPriceDiamonds 填得多正確，**已登入玩家的「選擇
-關卡」清單在 access 檢查那一步就把它濾掉了**，根本不會走到年級篩選那一關。未登入訪客看的是
-`index.json`（無 access 檢查）理論上看得到，但正式帳號一律看不到。
-
-**排查步驟（先查這個，不要先懷疑 gradeCode 或篩選器程式碼）**：
-```sql
-SELECT bank_id, COUNT(*) FROM bank_accesses WHERE bank_id = '<新bank的id>' GROUP BY bank_id;
--- 沒有任何一列 = 這就是根因，不必往下查篩選器程式碼
-```
-
-### 授權從哪來的兩種機制（新帳號 vs 既有帳號，兩者都要處理）
-
-1. **新帳號（未來註冊的）**：`backend/src/lib/onboarding.ts` 的 `ONBOARDING_BANKS` 常數，註冊時
-   自動 `applyOnboardingForUser()` 給予「國一下/國二下 Unit1」10天試用 + 「國三下 Unit1」永久免費
-   （保底能玩的題庫）。**要讓新題庫「所有人永久免費」，把它加進這個陣列**
-   （`{ grade, semester, unit, trial: false }`，`grade/semester/unit` 對應 `vocab_banks` 表裡
-   `gradeCodeToInt()`/`semesterCodeToInt()` 轉出來的整數 + unit 字串，要唯一能篩出這個 bank）。
-   改完要 `cd backend && npm run build` 才會進 `dist/`，重啟 prod 才生效（只影響「之後」新註冊的帳號）。
-2. **既有帳號（已經註冊過的）**：onboarding.ts 只在註冊當下跑一次，**不會自動回溯套用到舊帳號**。
-   千萬不要用 `backend/scripts/migrate-existing-players-onboarding.ts`——**那支會先
-   `bankAccess.deleteMany({})` 清空全部人的 BankAccess 再重建**，會把玩家已購買的題庫授權整個
-   洗掉，prod 上這樣做是災難。改用新寫的**非破壞性**腳本，只 upsert「這一個 bankId」、不動任何人
-   其他的購買/試用紀錄：
-   ```bash
-   cd backend
-   npx ts-node-dev --transpile-only scripts/grant_bank_access_all_users.ts --bank-id <uuid>            # dry-run
-   npx ts-node-dev --transpile-only scripts/grant_bank_access_all_users.ts --bank-id <uuid> --confirm  # 實際寫入
-   ```
-   （2026-09-14 首次用於 `en-hanlin-ep-alphabet-vocabulary`，57/57 帳號補發成功。）
-
-> 判斷準則：新題庫如果**只是想讓特定使用者**（例如已購買的班級/家長綁定）看到，走一般的購買/兌換/
-> 家長綁定流程即可，不必碰 onboarding.ts。**只有「打算讓所有人永久免費玩」的題庫**（例如這個 ABC
-> 入門救援題庫）才需要走上面兩步（onboarding.ts 加項 + 補發腳本），兩步缺一不可（只做前者新帳號有、
-> 舊帳號沒有；只做後者現有帳號有、之後新註冊的帳號又會漏掉）。
-
-## Reference docs in this repo
-
-- `OPERATIONS.md` — full restart / deploy / recovery runbook.
-- `Develop_MEMORY.md` — running log of decisions, bugs, env conventions.
-- `BOT_HANDOFF.md` / `PROD_DEPLOY_QUEUE.md` — deploy-bot protocol.
-- `PROJECT_STRUCTURE.md` — Phaser scene/system reference.
-- `CHANGELOG.md` — version history (currently 0.3.83).
-- `docs/ISSUE_HISTORY.md` — 問題情境 × 根因 × 解法速查。**遇到 CI / 測試 / dispatcher / 部署 / 環境的非顯而易見卡關，先 `grep -i "關鍵字" docs/ISSUE_HISTORY.md`** 找前例借鏡，再開始 debug；解掉新問題後追加一條。（與 `docs/feedback/` 分工：feedback/ 是 Phaser/UI/美術 bug pattern，本檔是更廣的部署/CI/流程歷史。）
-- `docs/appstore/SUBMISSION_LOG.md` — **App Store iOS 上架提交歷史 + Review 退件問題速查 + 上架前自查清單**。送審 / 改版上架 / 被 review 退件重送之前，**先讀這份逐條自查**（IAP 設定、screenshot 尺寸、build 換法、版本號、提交入口、Resolution Center 回覆等踩過的坑都在裡面）；每次送審或被退後**持續追加更新**。同目錄另有 `reject-2026-06-24-reply.md`(退件英文回覆草稿)、`iap-setup-checklist.md`(IAP 後台設定)。
-- `docs/I18N_LOCALIZATION_RUNBOOK.md` — **多語系翻譯標準流程**（UI 字串 + 題庫單字內容 + 離線 fallback JSON 三層，各自的覆蓋率盤點/批次翻譯/合併寫回工具指令）。要補新語系或追新語系進度（韓/日/泰…）**先看這份**，不用每次重新盤點；配套工具 `tools/i18n_coverage_report.cjs` + `tools/i18n_merge_translations.cjs`（UI 字串）、`backend/scripts/export_vocab_for_translation.cjs` + `import_translations.cjs` + `sync_translations_to_lesson_json.cjs`（題庫單字，`--lang` 參數指定語系）。
+- `docs/ISSUE_HISTORY.md` — **CI / 測試 / dispatcher / 部署 / 環境卡關，先 `grep -i "關鍵字" docs/ISSUE_HISTORY.md`** 找前例；解掉新問題後追加一條。
+- `docs/feedback/README.md` — Phaser / UI / 美術 bug pattern library，改 UI / 寫新場景前看索引。
+- `docs/appstore/SUBMISSION_LOG.md` — **iOS 送審 / 被退件重送前逐條自查**，每次送審後追加更新。
+- `docs/I18N_LOCALIZATION_RUNBOOK.md` — 多語系翻譯流程（UI 字串 + 題庫單字 + 離線 JSON）。
+- `docs/ASSET_GEN.md` + `docs/runbooks/asset-gen-flux.md` — 產素材（AutoSprite / FLUX / Azure TTS）；產一批美術一律走「多變體 → checkbox 預覽 → 使用者勾 CSV」流程，不要自己選圖。
+- `OPERATIONS.md` — restart / deploy / recovery runbook。`Develop_MEMORY.md` — 決策 / bug / 慣例流水帳。
+- `PROJECT_STRUCTURE.md` — Phaser scene/system reference。`CHANGELOG.md` / `RELEASE.md` — 版本歷史與發版規則。
