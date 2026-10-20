@@ -77,6 +77,7 @@ cd /Users/linus/Ai_Stock_Agent
 | `macro_indicators` § | 週一～五 06:30 | 全球風險溫度計：yfinance 抓 10 碼(`^VIX`/`^TNX`/`^IXIC`/`^SOX`/`^N225`/`^KS11`/`CL=F`/`GC=F`/`CNY=X`/`DX-Y.NYB`)寫 `macro_indicator_snapshot`。job 內含 staleness watchdog(>3 交易日逾期發 admin) |
 | `indicators_pipeline` § | 週一～五 14:35 | M7：refresh `adjusted_ohlcv` → `daily_indicators` → `daily_signals`（詳見 `docs/Technical_Indicator_Module_README.md` §7）。增量模式，跑 `ai_stock_agent.scripts.run_indicators_pipeline`，斷跑後重跑一次即從水位回補 |
 | `market_breadth` § | 週一～五 14:40 | HedgeMonitor P0：抓 FMTQIK 寫 `TWII`+`TW_TURNOVER` 進 `macro_indicator_snapshot`（詳見 `docs/Hedge_Monitor_Spec.md` §2.1；P1 後加 21:05 補 `TW_MARGIN_BALANCE`） |
+| `market_breadth_evening` § | 週一～五 17:30 | **晚場補抓 TWII+成交總值**(2026-10-20):同 `market_breadth` module 再跑一次。14:40 時證交所 FMTQIK 常還沒有當日資料,那輪只會寫到前一天 → 計分卡大盤軸、避險 regime 都晚一天。冪等 upsert,排在 21:35 hedge final / 22:10 signal_collect 之前 |
 | `market_breadth_margin` § | 週一～五 21:05 | HedgeMonitor P1：FinMind 全市場融資餘額 → `TW_MARGIN_BALANCE`（億元）。融資約 21:00 才更新，故獨立晚場一輪 |
 | `hedge_monitor_preliminary` § | 週一～五 14:45 | HedgeMonitor P2：風險評分初版(融資 T-1)。寫 `market_risk_snapshot`、送 8 指標 report embed、排除 stale 融資仍紅燈才發初版 admin 預警 |
 | `hedge_monitor_final` § | 週一～五 21:35 | HedgeMonitor P2：風險評分終版(融資 T)。跨級(比前一日終版)才發 admin。詳見 `docs/Hedge_Monitor_Spec.md` §4 |
@@ -416,6 +417,18 @@ curl "http://192.168.11.99:8080/api/v1/scorecard/latest?period_kind=month" \
   永不新增訊號);`_apply_market_gate` 只縮小 `max_single_name_weight`(**不擋出場**,該停損照賣)。
   政策全關 = 恆等變換,對照組 `reason_json` 與政策上線前逐鍵相同(有政策才多一個 `policy` 鍵)。
 
+### Dashboard 盤中頁按鈕(2026-10-20)
+
+- **② 走勢圖疊加訊號**:`GET /api/v1/hedge/chart/{symbol}` 每點另帶 `foreign_net`/`dealer_net`/`signal_level`/`signal_score`/`dip_scan`,
+  圖上畫外資(紫虛線)、自營商(青點線)、技術訊號 ◆(收盤下方,非中性才標)、抄底入選 ★(收盤上方)。
+- **「加入/取消技術訊號蒐集」**(走勢圖右上):`GET|POST|DELETE /api/v1/hedge/signal-collect/{symbol}`。加入 = `ensure_symbol_onboarded(source='signal')`
+  (FinMind 420 天日線)+ 法人回補 + 只對這檔跑指標 pipeline;之後由既有價格/法人/14:35 pipeline 每天維護。
+  `stock.source='signal'` **不進實驗股票池**(`sim_rotation` 輪動、`indicator_lab.load_bars` → Lab/pf36),也不被孤兒清理;
+  被加進持股/關注時自動升格成 `onboarded`。取消 = `orphan_cleanup.purge_symbol`(刪價格/法人/指標/訊號 + stock 列,計分卡台帳保留);
+  系統股票池/持股回 409。分析師點名股**不自動上架**(使用者決定)。
+- **③ [追蹤]/[取消追蹤]**:`PATCH /api/v1/watchlist/{user_id}/{symbol}/daily-report {"enabled": bool}` → `user_watchlist.daily_report_enabled`
+  (migration 0035)。14:00 `daily_report` 只掃 `daily_report_enabled` 的列。持股本身就在 watchlist,取消追蹤只關旗標、不刪列。
+
 ### 第二層：盤中大單即時偵測（Intraday Monitor，M9 / TASK-174 上線）
 
 > **這是「第二層」**,與「第一層」（盤後個股法人資金流向報表,見上節）**正交**:
@@ -471,6 +484,13 @@ curl "http://192.168.11.99:8080/api/v1/scorecard/latest?period_kind=month" \
 ⑤ **新指標 9 個**(`EXTERNAL_LABELS`):分析師看多/看空(`analyst_view`)、外資/投信買超、法人精選看多/看空
 (`signal_observation`)、營收動能>1 / 年增>0 / 創新高(**公布日**觸發一次,與 pf35/holding_watch 同算法)。
 週末/盤後的訊號歸到最近已收盤交易日、隔日開盤進場。分析師資料 2026-06-25 才開始。研究宇宙因此是 **22 個**。
+
+**研究結論 → 模擬組(2026-10-20,pf36 = #17)**:`python -m ai_stock_agent.scripts.create_lab_combo_portfolio --run-id N`
+把某次 run 的最佳組合/極性/出場 method/持有上限/同時檔數**凍結**進 `config_json.lab_combo`(`strategy='lab_combo'`),
+之後 Lab 再跑新研究也不會改到它。每天 `sim_plan`(23:10)分流到 `jobs/sim_lab_combo.py`(純函式 `analysis/lab_combo.py`):
+旗標/還原 K 棒共用 Lab 的 `load_signals`/`load_bars`(`since` 只載近 200 天),組合分≥1、同日先後同 Lab,隔日開盤市價進場;
+出場用還原價算 method(成本換到同一還原基準,否則除息缺口誤觸停損)。**與 Lab 唯一差異:觸發後隔日開盤才賣**(Lab 用觸發根收盤)。
+`sim_intraday` 跳過此組(盤中加碼/出場會讓它不再是那個組合的驗證)。限制:模擬撮合不處理拆股(持股數不變),跨拆股的部位損益會失真。
 
 同日移除研究指標 `signal_level_buy`:實測 `score>=4` 與 `signal_level IN (BUY,STRONG_BUY)` 在 911 筆上
 **零不一致**,是同一訊號的兩種寫法;兩者並存會讓 Phase B 對它重複計權(舊 run 的「最佳 7 指標」實為 6 個)。
