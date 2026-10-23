@@ -53,6 +53,8 @@ cd /Users/linus/Ai_Stock_Agent
    4. `com.linus.aistockagent.kpi`（每月 1 號 03:00 跑 `kpi_monthly`）
    5. `com.linus.aistockagent.healthcheck`（每 300 秒，呼 `/healthz`、失敗時 Discord 告警 + 嘗試自動 kickstart API）
 3. **API health probe**（`curl $AI_STOCK_AGENT_HEALTHCHECK_URL`，30 秒內等 200）
+4. **probe 通過後才 kickstart `healthcheck`**（2026-10-23 起）。實際預設只踢 `api`，`daily/weekly/kpi` 要 `--yes-reports`。
+   與 api 同時踢的話，healthcheck 會打到重啟中的 API、自己再 `kickstart -k api`，造成 30 秒停機和 admin 頻道誤報 DOWN/RECOVERY。
 
 #### 全部 launchd job 目錄（★ = restart_all 會 kickstart；§ = 已在 launchctl_manage JOBS）
 
@@ -302,9 +304,32 @@ AI_STOCK_AGENT_DB_PASSWORD=...        # 密碼留在 .env，不入 git
 
 LLM keys 同樣放 .env：`ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、`GOOGLE_API_KEY`。
 
+### Dashboard 認證(多使用者,2026-10-23)
+
+> 規格:`docs/superpowers/specs/2026-10-22-multi-user-dashboard-auth-design.md`。Cleo 端:`docs/Cleo_Notify_API_Spec.md` §8。
+
+- **登入**:帳號密碼 + Google Authenticator(TOTP)→ 伺服器端 session(`app_session`,cookie 只放隨機 id、DB 存 SHA-256)。
+  閒置 12 小時 / 最長 7 天。外網 cookie `aistock_session`(Secure)、區網 `aistock_session_lan`。頁面 `/login`、`/signup`、`/reset`、`/logout`。
+- **帳號來源**:使用者在 Discord 對 Cleo 打 `/aistock 註冊` / `/aistock 重設` → Cleo 呼叫 `POST http://192.168.11.99:8080/api/v1/auth/signup-link`(同機才收,判斷在 `auth/public.py::is_loopback_request`,與 `/alerts/*` 共用;api 不聽 127.0.0.1)拿 15 分鐘一次性連結。
+  admin 用 `python -m ai_stock_agent.scripts.create_admin --username linus --discord-user-id 797098030682996756`(終端互動、掃 QR)。
+  管理:`python -m ai_stock_agent.scripts.auth_admin {list|disable|enable|revoke-sessions|set-quota|reset-link}`。
+- **必填 env**:`AISTOCK_AUTH_SECRET_KEY`(Fernet,加密 TOTP secret;**設定後不可更換**,換了全部使用者要重設)。未設 → 登入/註冊回 503,Bearer 程式呼叫不受影響。
+- **身分(`auth/principal.py`)**:`System` = 本機/區網帶共用 `AI_STOCK_AGENT_API_TOKEN` 的程式呼叫(Cleo/OpenClaw,等同 admin);`SessionUser` = 登入 cookie。
+  既有路由的 `BearerToken` 型別別名現在解析成 Principal,所以同時支援兩者。帶 `{user_id}` / `?user_id=` 的路由一律過 `resolve_owner` ——
+  **SessionUser 只能存取自己的 discord_user_id(admin 也一樣,代操作請走本機 Bearer)**,否則 403 `Not your data`。
+  session 認證的 POST/PATCH/PUT/DELETE 要帶 `X-Requested-With: aistock`(CSRF),dashboard 的 `AUTH_JS`(`api/dashboard_auth_js.py`)自動帶。
+- **外網(`aistock.edurpg.org`,cloudflared)**:有 `CF-Ray`/`CF-Connecting-IP` 或 Host = `AISTOCK_PUBLIC_HOST` 即視為外網(`auth/public.py`)。
+  外網**忽略 Bearer**、只收 session;路徑走**預設拒絕白名單**(`auth/public_gate.py`,`/docs`、`/healthz`、admin/scheduled/alerts/price-targets/scan/institutional/glossary 一律 404)。
+  ⚠️ cloudflared 轉入的請求 client IP 是 127.0.0.1 —— 「只限本機」一律用 `is_loopback_request`,不要只看來源 IP。
+- **權限**:一般使用者只看 盤中/計分卡/分析師/營收 四頁;模擬/Lab/研究頁與 `/api/v1/sim*`、`/api/v1/research*` 限 admin。
+  「加入/取消技術訊號蒐集」、計分卡「回補資料」、`watchlist/{id}/scan` 限 admin;「🔄 回補持股資料」一般使用者可按(只補自己的持股)。
+- **額度**:一般使用者持股(watchlist 總列數)上限 `app_user.holding_quota` 預設 10(超過 409 `已達 N 檔上限`;付費擴充改這欄);admin = NULL(仍受系統上限 30)。
+  Cleo 代未註冊的 Discord ID 新增仍是舊上限 30。`POST /api/v1/analyze/single` 一般使用者每日 20 次(`auth_usage_daily`,超過 429)。
+- **14:00 日報**:個股分析改經 Cleo 私訊給勾了「追蹤」的本人(`kind=daily_report`);report 頻道只留大盤/總經,不列任何代號。
+
 ### Watchlist API（使用者追蹤清單，OpenClaw client 呼叫）
 
-實作在 `ai_stock_agent/api/watchlist.py`，router prefix `/api/v1/watchlist`，model 在 `ai_stock_agent/models/watchlist.py`。**所有 endpoint 都要 `Authorization: Bearer <AI_STOCK_AGENT_API_TOKEN>`**（不是 admin token）。`{user_id}` 是 Discord user id，放在 path 上。
+實作在 `ai_stock_agent/api/watchlist.py`，router prefix `/api/v1/watchlist`，model 在 `ai_stock_agent/models/watchlist.py`。**所有 endpoint 都要 `Authorization: Bearer <AI_STOCK_AGENT_API_TOKEN>`**（不是 admin token）。`{user_id}` 是 Discord user id，放在 path 上。程式呼叫用 Bearer;dashboard 用登入 session,且只能操作自己的 `{user_id}`(見上節「Dashboard 認證」)。
 
 | 動作 | Method + Path | Body |
 |---|---|---|
@@ -325,7 +350,7 @@ curl -X POST "http://192.168.11.99:8080/api/v1/watchlist/$USER_ID/add" \
 
 回應是 `WatchlistResponse`，`data.items[]` 回該使用者**整份**清單（每筆含 `symbol` / `note` / `added_at`）。
 
-- 每位使用者上限 **30 檔**（`MAX_WATCHLIST_ITEMS`）。
+- 系統上限 **30 檔**（`MAX_WATCHLIST_ITEMS`）;已註冊 dashboard 的一般使用者另有帳號上限(預設 10,`app_user.holding_quota`)。
 - `symbol` 會被正規化（去空白、轉大寫）；每個操作都寫 `audit_log`。
 - 對應 DB 表是 `user_watchlist`（見 §4 Schema）；批次掃描 per-symbol timeout = 60 秒（見 §5 慣例）。
 
