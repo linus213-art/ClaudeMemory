@@ -51,7 +51,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 > 🟥 **重啟 PROD 前先確認沒人在線**（`SessionRunner` 狀態在記憶體，重啟會丟）；未經本回合授權不要重啟 prod：
 > ```bash
-> key=$(grep '^ADMIN_API_KEY=' /Users/linus/edurpg/backend/.env | cut -d= -f2)
+> key=$(grep '^ADMIN_API_KEY=' /Users/linus/edurpg/backend/.env | cut -d= -f2 | tr -d '\r')   # .env 是 CRLF，不去 \r → 400
 > curl -s -H "x-admin-key: $key" http://localhost:3020/api/admin/quiz/live-count
 > ```
 > `count > 0` → 先問使用者。常駐授權用語見 `Develop_MEMORY.md` §2.4。
@@ -61,7 +61,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | 服務 | 連線 | 備註 |
 |---|---|---|
 | Postgres | `postgresql://edurpg:<pw>@localhost:5432/edurpg_db` | Homebrew `postgresql@16` |
-| Backend(PROD) | `http://127.0.0.1:3020` | `node dist/index.js`，健康檢查 `/api/health` |
+| Backend(PROD) | `http://127.0.0.1:3020` | `node dist/index.js`，健康檢查 `/health` |
 | Admin(PROD) | `http://127.0.0.1:3010` | bind loopback only |
 | Frontend(PROD) | `http://127.0.0.1:3005` | `vite preview --strictPort` |
 | Public | `https://edurpg.org` | cloudflared → `:3005` |

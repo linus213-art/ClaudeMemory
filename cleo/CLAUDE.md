@@ -294,10 +294,14 @@ DATABASE_URL=postgresql+asyncpg://cleo:<pw>@localhost:5432/cleo uv run alembic u
 **LLM backend 分層(CLE-449 / CLE-450)**:會議產製是兩段式,各自綁不同 `AnthropicWrapper`:
 
 - **Stage-1 transcript correction**(glossary 套用 + STT 修錯 + 講者標註)
-  → **永遠走 Anthropic Sonnet**,不受 `CLEO_MEETING_LLM_BACKEND` / `CLEO_LLM_FORCE_BACKEND` 影響。
-  原因:qwen3:8b 無法穩定吐 `TranscriptCorrection` 的 strict-JSON schema,
+  → **固定走 DeepSeek**(CLE-791;原 CLE-449 鎖 Anthropic,但 Anthropic 額度不足期間改用 DeepSeek 效果可接受),
+  不受 `CLEO_MEETING_LLM_BACKEND` / `CLEO_LLM_FORCE_BACKEND` 影響。模型走 `model_routing` 預設 Haiku 名
+  → wrapper 自動映射成 `deepseek-v4-flash`。
+  安全網:`LLMExtractionService` 對 `requires_structured_output` 的 spec 帶 `expects_json=True`,
+  DeepSeek 回非 JSON / 空白 → wrapper 自動改打 Anthropic;`_try_parse` 也容忍 ```json 圍欄 / 前導句。
+  **絕不走 Ollama**:qwen3:8b 無法穩定吐 `TranscriptCorrection` 的 strict-JSON schema,
   一旦切到 Ollama 整條 stage-2 都會 fallback 到 raw transcript。
-  Wrapper 在 `apps/bot/cleo_bot/main.py` 用 `force_backend="anthropic"` hard-lock。
+  Wrapper 在 `apps/bot/cleo_bot/main.py` 用 `force_backend=MEETING_STAGE1_FORCE_BACKEND`(`meeting_llm_routing.py`)hard-lock。
 - **Stage-2 artifact extraction**(`minutes` / `summary` / `follow_up` / `next_steps`)
   → 依 `CLEO_MEETING_LLM_BACKEND=ANTHROPIC_API`(預設)、`OLLAMA`,或 `DEEPSEEK_API`(CLE-450)切換。
   Boot 時固定,要改要 `restartCleo.sh`(不是 hot-reload)。
@@ -305,6 +309,11 @@ DATABASE_URL=postgresql+asyncpg://cleo:<pw>@localhost:5432/cleo uv run alembic u
 `CLEO_LLM_FORCE_BACKEND=ollama|deepseek_api` 是 CLE-430 / CLE-450 留下的全域逃生口,影響
 非會議的 LLM 呼叫(chitchat、scope classifier 等)。Meeting 兩條 wrapper 因為都明確設了
 `force_backend`,不會被它劫持。
+
+**閒聊依付費等級選模型(CLE-785)**:只有 free-chat 回覆(`intent="unknown"`)看
+`CLEO_FREE_CHAT_TIER_BACKENDS`(預設 A→DeepSeek、B/C/D→Anthropic `claude-haiku-5-5` effort=medium(CLE-786);
+等級讀 `effective_plan`,未知=A)。Haiku 失敗退 DeepSeek → Ollama;每日花費 breaker 跳了全部走 Ollama。
+其他呼叫點不受影響。細節見 `docs/free-chat-credits-spec.md` §1.1。
 
 CLE-464 把以下 12 個 shared service / route 從 raw `AsyncAnthropic` 遷移到
 `AnthropicWrapper`(都不傳 `force_backend=`,直接繼承 `CLEO_LLM_FORCE_BACKEND`),
@@ -753,3 +762,27 @@ POST → `/webhooks/email/inbound` → triage worker → DM**。
 - **yt-dlp 需要 JS runtime**:YouTube 抽取要 JS,yt-dlp 預設只開 deno;我們用 Homebrew **node**
   (`js_runtimes={"node":…}`,`_tool_path` 找不到 PATH 時 fallback `/opt/homebrew/bin`)。ffmpeg 同理。
   **YouTube 常改版 → 一直失敗先 `uv lock --upgrade-package yt-dlp && uv sync` 再重啟 worker-media。**
+
+---
+
+## 19. 人物 × 使用者記憶「[我們的近況]」(CLE-776a/b/c)
+
+> 細節 / 呼叫點設定表見 **`docs/persona-memory-block.md`**。Flag:`CLEO_OUTBOUND_MEMORY_ENABLED`(776a)、
+> `CLEO_DAILY_DIGEST_ENABLED`(776c)、`CLEO_PERSONA_MEMORY_BLOCK_ENABLED`(776b),皆預設 off。
+
+- `PersonaEngine.build_system_prompt(..., include_memory=None)`:`None` → `TASK_MEMORY_DEFAULTS`(對話/主動訊息 on、
+  slot-filling flow off)。區塊附在 **dynamic** 段最後,cache 段不動;flag off 逐字不變。
+- **新增 persona task 一定要在 `cleo_shared/persona/memory_block.py:TASK_MEMORY_DEFAULTS` 給明確值**(測試鎖 key 集合)。
+- **新呼叫點不要再自己讀 `ConversationMemoryService.recent()` 塞 prompt** —— 會跟區塊重複。寫給「使用者以外的人」
+  的文字(如 family_reminder)一律 `include_memory=False`。
+- 區塊建構有 1.5s 時限(超時 → 無區塊),唯讀、絕不建 DEK / commit。
+- **新增「直接打 Discord/LINE REST」的主動 DM(不走 outbox)一定要在送出成功後呼叫** `cleo_shared.services.outbound_memory.record_outbound`
+  (或注入 `OutboundRecorder`)並在 `DIRECT_REST_SOURCES` 給 tag + 標籤(CLE-781);worker 有 grep 測試會擋漏接。
+- 換角色:`/persona/switch` 寫 `[交接]` outbound + Redis 一次性旗標 `cleo:persona:handover:{uid}`(72h;只有 free-chat
+  回覆路徑 peek,**真回覆送出後**才 DEL,提醒/晨報不碰);bot 用**舊人物**
+  embed 送交接句。依日期回查:`conversation_recall` recipe(0 LLM,只讀摘要/原文,找不到就說找不到)。
+- **人物 prompt v2.1(CLE-786,flag `CLEO_PERSONA_PROMPT_V21`,預設 off)**:身分一句 + 人物小傳 + 共用規則 + 【分寸】+ 每次抽 3 句語感;
+  每人物一份 `cleo_shared/persona/voice_pools/<variant_id>.yaml`(新增 variant 必加,boot 驗證)。[文字動作] 由 Redis gate 控制
+  (10 則最多 1 次、只用角色卡動作、無卡不放行;只有 `free_chat=True` 的自由聊天路徑會查/扣)。只套 raw locale zh-TW +
+  `V21_TASKS`(query + 對使用者說話的 composer);slot-filling flow、`to_user=False`(family_reminder)留 v1。
+  pool 例句不得含 `COMMON_CARE_PHRASES`、描述句回覆不得問句收尾(boot 驗證)。改用語前後跑 `scripts/simulate_persona_v21.py`。結構見 **`docs/persona-v21/README.md`**。
