@@ -48,6 +48,11 @@ cd /Users/linus/cleo
    - `CLEO_RUN_MIGRATIONS=0` 跳過 migration,但之後的 `verify_schema_current` 還是會檔 stale schema。
    - `CLEO_ALLOW_STALE_SCHEMA=1` 跳過 migration 失敗保護 + drift 檢查,允許 DB schema 落後 head 還是啟動 api/worker/bot。**只在你確定後續業務不會因 schema mismatch 噴 UndefinedColumnError 才用**(例如要 boot 起來看 log 排查 botched migration)。預設 `0`。
 4. **cloudflared tunnel**(LaunchDaemon `system/com.cloudflare.cloudflared`)
+4b. **local-ai-hub 健康檢查**(CLE-796,`check_local_ai_hub`,只 warn 不擋)— hub **不由 start_cleo.sh 啟動**,而是 user LaunchAgent
+   `com.linus.local-ai-hub`(`KeepAlive=true`,launchd 常駐;plist 在 `tools/local-ai-hub/launchd/`),全機唯一能載入本地模型的行程
+   (Qwen3-ASR / Nemotron / Ollama 經 `:11435` proxy),只綁 127.0.0.1(:8765 job API + :11435 Ollama proxy),token 在 `~/.local-ai-hub/token`。
+   腳本帶 token 打 `/healthz`;不健康時會議 / 語音指令自動改走 AssemblyAI。`CLEO_CHECK_LOCAL_AI_HUB=0` 跳過。
+   狀態:`launchctl print gui/$(id -u)/com.linus.local-ai-hub`;停:`launchctl bootout gui/$(id -u)/com.linus.local-ai-hub`(驗收「hub 掛掉改走雲端」用)。
 5. **cleo-web**(pm2 → `ecosystem.config.js`,Next.js on `:3000`)
 6. **api**(`scripts/run-api.sh` → `python -m cleo_api.main`)— 等 `/healthz` 健康後才繼續
 7. **worker**(`scripts/run-worker.sh --queue default --queue summary --queue briefing` → `python -m cleo_worker.main`)
@@ -73,7 +78,7 @@ cd /Users/linus/cleo
 
 `CLEO_STOP_FIRE_LOOP=0` 可在 stop 階段保留 fire-loop(api/bot redeploy 不影響 fire-loop)。
 
-`CLEO_STOP_MEETING_WORKER=0`(CLE-705)可保留 `worker-meeting` 行程 —— **有長會議轉錄正在跑時,重啟其他服務前先設這個**,不然 `restartCleo.sh` 會連同它一起 SIGTERM,白做的轉錄進度全丟(WhisperX 沒有 checkpoint/resume)。設了之後 stray-process 掃除(`stop_matching_processes`)也會跳過命令列含 `meeting_audio` 的行程,不會被撈到殺掉。
+`CLEO_STOP_MEETING_WORKER=0`(CLE-705)可保留 `worker-meeting` 行程 —— **有長會議轉錄正在跑時,重啟其他服務前先設這個**,不然 `restartCleo.sh` 會連同它一起 SIGTERM,白做的轉錄進度全丟(WhisperX 沒有 checkpoint/resume;CLE-796 後 hub 自己會斷點續跑,但 worker 端輪詢中斷仍會讓這筆重排)。設了之後 stray-process 掃除(`stop_matching_processes`)也會跳過命令列含 `meeting_audio` 的行程,不會被撈到殺掉。
 
 ### 個別重啟 cleo-web 的小提醒
 
@@ -260,7 +265,16 @@ DATABASE_URL=postgresql+asyncpg://cleo:<pw>@localhost:5432/cleo uv run alembic u
 
 ## 7. 會議錄音 pipeline(從 Discord attachment → 會議紀錄)
 
-短語音指令(<60s)經本地 WhisperX 轉逐字稿後走同一條 recipe;長語音仍走 meeting pipeline。
+短語音指令(<60s)經 **local-ai-hub**(interactive 通道、不分講者)轉逐字稿後走同一條 recipe;hub 不可用/失敗 → 改打 AssemblyAI
+(`get_voice_message_stt_backend` = `FallbackSTTBackend`),兩邊都失敗才回 `VOICE_MESSAGE_STT_FAILURE_DM`。長語音仍走 meeting pipeline。
+
+> **本地 STT = local-ai-hub(CLE-795/796)**:`CLEO_STT_BACKEND=local` 現在指 hub(Qwen3-ASR 1.7B 8-bit 轉錄 + **Nemotron 3** 講者辨識,
+> 皆 MLX),不再是 WhisperX。backend = `cleo_shared/services/stt/local_hub_backend.py`(`LocalHubBackend`);client 是
+> `tools/local-ai-hub/client/local_ai_hub_client.py` 的 **vendored 副本** `cleo_shared/services/stt/local_ai_hub_client.py`
+> (測試鎖兩份 byte-identical,改 hub 那份後要重 copy)。Qwen3-ASR 吐**簡體** → backend 一律 OpenCC `s2twp` 轉繁體。
+> 設定:`LOCAL_AI_HUB_URL`(預設 `http://127.0.0.1:8765`)、`LOCAL_AI_HUB_TOKEN_FILE`(預設 `~/.local-ai-hub/token`)。
+> 逃生口:`CLEO_LOCAL_STT_ENGINE=whisperx`(預設 `hub`)切回舊 WhisperX runner(會議 + 語音都切);穩定一週後另開 task 移除 WhisperX。
+> 設計 / API / 記憶體預算見 `docs/local-ai-hub-spec.md`。
 
 完整呼叫鏈:
 
@@ -282,7 +296,11 @@ DATABASE_URL=postgresql+asyncpg://cleo:<pw>@localhost:5432/cleo uv run alembic u
    - **檔案直傳 S3 → 不過 cloudflare tunnel → 沒有 100MB body 限制**
 
 4. **Worker STT**:`apps/worker/cleo_worker/tasks/process_meeting_audio.py:129` (`process_meeting_audio`)
-   - probe metadata → trim silence → STT(line 237-243,根據 `meeting_backend_used` 走 AssemblyAI 或 WhisperX+Ollama)→ status=`completed`
+   - probe metadata → trim silence → STT(根據 `backend_used`:`cloud` = AssemblyAI;`local` = local-ai-hub batch 通道 + 講者)→ status=`completed`
+   - **local(hub)路徑整段送一次**:hub 自己切 ~5 分鐘窗、可斷點續跑,worker **不再** `_transcribe_chunked_audio` 切塊(雲端路徑照舊切)。
+     送的是 worker 下載的本地檔(copy 進 `~/.local-ai-hub/inbox/`),不是 presigned URL。
+   - **hub 不可用 / job 失敗 → 改走 AssemblyAI**(`_transcribe_local_hub_or_cloud`):`backend_used` 改寫 `cloud`(後續 retry 也留在雲端)、
+     **額度沿用 STT 前那一次預扣,不多扣**,並 enqueue `notify_meeting_stt_fallback` DM「本機轉錄忙線/維護中,這次改用雲端轉錄」。
    - 最後 enqueue `notify_meeting_complete(recording_id)` (line 322-323)
 
 5. **STT 後通知**:`apps/worker/cleo_worker/tasks/notify_meeting_complete.py:65`
@@ -375,23 +393,30 @@ Anthropic-compatible endpoint,所以走同一個 `AsyncAnthropic` SDK,只是 `ba
 
 ---
 
-## 9. 打招呼走 greeting recipe(CLE-466)
+## 9. 打招呼走 greeting recipe(CLE-466,CLE-800)
 
 純打招呼(「Hi Dolly」「嗨」「早安」)**不打 API token**:scope_classifier 判成 `greeting`
 → `INTENT_TO_RECIPE["greeting"]` → `greeting` WorkflowRecipe(`packages/shared/cleo_shared/workflow/recipes/greeting.py`)
-→ 單一 action `greeting.fetch_random` 從 `persona_greeting_pool` 表 `ORDER BY random()` 抽一句
+→ 單一 action `greeting.fetch_random` 從 `persona_greeting_pool` 表隨機抽一句
 → 替換 `{nickname}` / `{persona_name}` → DM 回去。runtime **0 個 LLM call**。
 
-招呼句子是**離線**用 local Ollama(qwen3:8b)按 persona variant 預生成的(每個 variant 10 句互異):
-- 生成 task:`apps/worker/cleo_worker/tasks/regenerate_persona_greetings.py`
-  (`AnthropicWrapper(force_backend="ollama")`,dedup ratio 0.8 + retry 2 次,失敗不刪舊池)。
-- 手動觸發:`POST /admin/personas/variants/{variant_id}/regenerate-greetings`(admin token)。
-- 自動補空池:scheduler job `refill_empty_greeting_pools`(每日 06:30 UTC)。
-- Day-1 保底:migration `20260529010000_persona_greeting_pool` 對每個 variant seed 5 句
-  (`generated_by='seed'`),所以即使 Ollama 沒跑、recipe 也抽得到。
+**短時間不重複(CLE-800)**:每人最近用過的句子 id 存 Redis list `cleo:greeting:recent:{user_id}`
+(保留 `min(5, 池大小-1)` 筆、TTL 7 天),`PersonaGreetingPoolRepository.fetch_random(..., exclude_ids=)` 排除;
+排除後無句可抽就不排除。Redis 不通 → 照舊隨機,不擋回覆。換人物 = 不同 id,自然不衝突。
 
-**不**用 DeepSeek 生成(目的就是避免 API token);生成失敗時 wrapper 內建的 Anthropic
-fallback 只是 JSON 安全網,不影響 runtime 抽句子那條路。
+**句子池由 DeepSeek 照 v2.1 人物設定離線生成**(成本約 $0.01/全池;**不再用 Ollama**,避免佔 local-ai-hub):
+- 目標數:`minimal_*` / `concise_*` = 8 句,其他 = 15 句(`cleo_shared/db/persona_greeting_pool.py` 的
+  `greeting_target_for` / `persona_greeting_targets`)。
+- 生成 task:`apps/worker/cleo_worker/tasks/regenerate_persona_greetings.py`
+  (`AnthropicWrapper(force_backend="deepseek")`,prompt 用 `persona/voice_pools/<variant>.yaml` 的 bio/speech/examples)。
+  規則:每句含 `{nickname}`;禁時間詞(早安/晚上…)、禁假裝觀察(看起來/好久不見…)、禁罐頭關心(加油/辛苦了 + `COMMON_CARE_PHRASES`);
+  去 `{nickname}`/標點後 `SequenceMatcher` ≥0.7(terse 0.8)視為重複;不足就帶已有句子再要,最多 4 輪。
+- 自動補:scheduler job `refill_greeting_pools`(每日 06:30 UTC)—— 池**低於目標 60%**(15→<9、8→<5,含新人物 0 句)
+  就 enqueue `mode="topup"`,**只新增**到目標、不刪既有句。
+- 手動整池替換:`POST /admin/personas/variants/{variant_id}/regenerate-greetings`(admin token)→ `mode="replace"`,
+  舊句先寫進 log(`regenerate_persona_greetings.backup`),新批次湊滿目標才替換,否則舊池不動。
+- Day-1 保底:migration `20260529010000_persona_greeting_pool` 的 seed(5 句);2026-10-25 已用 DeepSeek 重生全池
+  (`generated_by='deepseek_v21_20261025'`)。
 
 ---
 
@@ -546,7 +571,11 @@ add/remove/list 是**快速同步** provider 呼叫,經注入的 `WatchlistGatew
   - 真實範例:`apps/worker/cleo_worker/tasks/traffic_alert.py`(`send_dm`)、`scripts/bot_exposure_report.py`。
 
 呼叫**本地 Ollama**(離線、不花 API token):
-- base url = `settings.ollama_base_url`(env `OLLAMA_BASE_URL`,預設 `http://127.0.0.1:11434`);
+- base url = `settings.ollama_base_url`(env `OLLAMA_BASE_URL`,預設 = **local-ai-hub 的 Ollama 相容 proxy `http://127.0.0.1:11435`**,CLE-796)。
+  ⚠️ **不要直打 Ollama 原生 `:11434`**(會繞過 hub 的排隊 + 記憶體預算,這台 16GB 機器同時載兩個大模型就當機);
+  `packages/shared/tests/test_local_hub_backend.py` 有 grep 測試擋 `apps/` `packages/` 出現 `:11434`。
+  批次性質(沒人在等)的呼叫加 header **`X-Hub-Lane: batch`**(如 `scripts/bot_exposure_report.py`),預設 interactive;
+  proxy 在記憶體吃緊時回 503 `hub_code=memory_pressure`(`retryable:true`)。
   model = `settings.ollama_model`(env `OLLAMA_MODEL`,預設 `qwen3:8b`)。
 - 一次性生成最簡:`POST {base}/api/generate`,body `{"model","prompt","stream":false,"think":false}`,
   取 `.response`。**qwen3 預設會吐 `<think>…</think>`**:送 `"think": false` 關掉,並在 prompt

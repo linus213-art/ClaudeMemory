@@ -56,6 +56,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 > ```
 > `count > 0` → 先問使用者。常駐授權用語見 `Develop_MEMORY.md` §2.4。
 
+### 開機自動啟動（LaunchDaemon `com.linus.edurpg.autostart`）
+
+Mac 重開機後**不必登入**就會自動把 PROD 拉起來（本機沒開自動登入，所以用 system LaunchDaemon + `UserName=linus`，不是 user LaunchAgent；postgres、`/etc/cloudflared` 也是同樣方式開機啟動）。
+- 腳本 `scripts/autostart_prod.sh`：等 postgres + 網路（各最多 3 分鐘）→ backend `/health` 已正常就**跳過**（不會重啟踢人）→ 否則跑 `./scripts/restart_prod.sh`（**不帶** `--build-all`，沿用現有 `dist/`）。log：`tools/logs/autostart.log`、`autostart.launchd.log`。
+- plist 原始檔 `scripts/launchd/com.linus.edurpg.autostart.plist`（`RunAtLoad`、`AbandonProcessGroup=true` —— 少了它 launchd 會在腳本結束時把 nohup 起的子服務一起收掉；`HOME` 要明寫，cloudflared 讀 `~/.cloudflared`）。
+- **安裝 / 改 plist 後重裝**（要 sudo，由使用者本人跑）：
+  ```bash
+  sudo cp scripts/launchd/com.linus.edurpg.autostart.plist /Library/LaunchDaemons/ && sudo chown root:wheel /Library/LaunchDaemons/com.linus.edurpg.autostart.plist && sudo chmod 644 /Library/LaunchDaemons/com.linus.edurpg.autostart.plist
+  sudo launchctl bootout system/com.linus.edurpg.autostart 2>/dev/null; sudo launchctl bootstrap system /Library/LaunchDaemons/com.linus.edurpg.autostart.plist
+  ```
+  bootstrap 會立刻跑一次（服務已在跑 → 跳過）。只改 `autostart_prod.sh` 不必重裝。
+- 停用：`sudo launchctl bootout system/com.linus.edurpg.autostart`；查狀態：`sudo launchctl print system/com.linus.edurpg.autostart | head`。
+- 改了 repo 路徑 / port / 服務組成時，記得同步 `autostart_prod.sh`（它只是包一層 `restart_prod.sh`）。
+
 ### 服務 / DB
 
 | 服務 | 連線 | 備註 |
