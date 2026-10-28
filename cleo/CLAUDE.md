@@ -199,6 +199,10 @@ Dispatcher 內建 guard:`REPO_ROOT` / `WORKTREES_DIR` 路徑含 `aistock` / `edu
    - **回報任何進度、或判定「未做 / 未合併」之前,先跑 `./scripts/task_status.sh CLE-NNN`**(唯讀):一次列出任務檔、
      origin/main commit、遠端分支、本機 worktree、PR、認領紀錄、dispatcher。只查 main 或 memory 不算查證。
    - 查到別的 session 已認領或已有分支 / PR → 不重做,回報時寫明「由 <session> 負責,見 PR #N」。
+   - **誰做了什麼看 `/admin/claims`(CLE-817)**:合併 PR 一律用 `./scripts/pr_merge.sh <N>`(包 `gh pr merge --merge` + 記一筆
+     merge 事件);commit 由 `prepare-commit-msg` hook 自動加 `Agent-Session:` trailer,push 由 `pre-push` hook 記事件
+     (每個 checkout 一次性 `pre-commit install --hook-type prepare-commit-msg --hook-type pre-push`)。這些都是 session 自填,
+     **只供參考,不能當稽核或核准證據**(核准只認 `owner_approval` 表)。
 
 **串接多任務的 driver 範本**(放 `/tmp`,**不要放 repo 內** — dispatcher 對 dirty `REPO_ROOT` 會拒跑;我第一版把 driver 丟 `tasks/logs/` 直接害下一個 task 起不來):
 
@@ -263,6 +267,10 @@ DATABASE_URL=postgresql+asyncpg://cleo:<pw>@localhost:5432/cleo uv run alembic u
 - **工作佇列總覽(CLE-809)**:Cleo + Ai_Stock 長時間工作(轉錄、會議紀錄、YouTube→MP3、節目分析)的 ledger 表 `ops_jobs`,
   後台 `/admin/jobs`、Ai_Stock 走本機 `/internal/ops-jobs`(`X-Ops-Jobs-Token` = `~/.config/linus-ops/ops_jobs_token`)。
   **新增會排隊的長時間工作記得用 `cleo_shared.services.ops_jobs`(`record_queued` + `ops_job`)記一筆**;契約 / kind 表見 **`docs/ops-jobs.md`**。
+- **背景雲端 AI 呼叫要排隊(CLE-816)**:沒人在等回覆的雲端 LLM 工作(晨報、每日摘要、問候池、郵件分析…)包
+  `cleo_shared.services.cloud_ai_lane.background_ai_turn(task=...)`,全機一條車道輪流跑(預設一次一個、批次每日 $1 上限)
+  並自動出現在工作佇列總覽;**有人在等回覆的呼叫(聊天、分類、抽取、提醒)不要包**。開關 `CLEO_CLOUD_AI_LANE_ENABLED`(預設關)。
+  設計見 **`docs/cloud-ai-queue-spec.md`**。
 - 健康檢查:`curl http://127.0.0.1:8000/healthz`、`pm2 status`、`redis-cli ping`、`psql -d cleo -c '\dt' | head`
 
 ---
@@ -882,6 +890,16 @@ POST → `/webhooks/email/inbound` → triage worker → DM**。
   Cleo 端(CLE-806):`POST/GET /internal/approvals`、`POST /internal/approvals/{id}/consume`(`apps/api/cleo_api/routes/owner_approvals.py`,
   本機限定 + `X-Approvals-Token` = `~/.config/linus-ops/approvals_token`)→ bot 私訊站長 [核准]/[拒絕](`cleo_bot/cogs/owner_approvals.py`)。
   表 `owner_approval`(保留 90 天);**只有站長本人點按鈕能改成 approved/denied,沒有任何 API 能設**;核准後 10 分鐘內要 consume、只能用一次、指紋要相符。
+- **送審流程:開發 agent → reviewer → pm → 站長(站長 2026-10-28)** —— 要站長核准的腳本、PR 合併、重啟、改 `.env`/設定、spec 都走這條,
+  不可再直接送 Discord 核准單:
+  1. 腳本寫好先 `bash -n` + 算 `shasum -a 256`,SendMessage 給 `reviewer`:腳本路徑、sha256、要做什麼、相關 PR / commit / CI 狀態。
+  2. reviewer 把意見寫成 `/Users/linus/agents-reviewer/reviews/` 下的檔案,回覆本 agent 與 pm。
+  3. 核准單草稿(指令、說明、腳本 sha256、reviewer 意見檔名)交給 `pm`,**先不要送**。
+  4. 收到 pm 回「pm 放行」才送 `approval run`;`--reason` 開頭寫 `reviewer:<結論>(<檔名>)/ pm:已核對`。
+  5. **腳本要鎖定版本**:合併前比對 PR head sha,不符就 abort(`./scripts/pr_merge.sh` 目前不收 `--match-head-commit`;直接用 `gh pr merge <N> --merge --match-head-commit <sha>` 會少記一筆 merge 事件);重啟 / 部署
+     `git merge --ff-only <指定 commit>`,ff 後 `git rev-parse HEAD` 不等於就 abort;等 CI runner 用 `pgrep -f Runner.Worker` 判斷。
+  6. **送審後腳本不可再改**,改了就整個重走;真的緊急來不及 → 先問 pm。
+  - 站長已經按下核准的單照常執行;「pm 放行」只管**新單送出前**,不能用來擋站長已核准的單。pm 與 reviewer 都不是授權者,核准只認站長按鈕。
 - **主動回報 pm(站長 2026-10-27 要求)**:以下時點各送一則 SendMessage 給 `pm`,不必等 pm 來問:
   1. 開始一項開發工作(單號/PR、要做什麼、預計下一步)
   2. 開 PR、CI 結果出來、合併、部署/重啟完成

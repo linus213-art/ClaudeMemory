@@ -110,6 +110,12 @@ Mac 重開機後**不必登入**就會自動把 PROD 拉起來（本機沒開自
 
   **右欄的事兩種取得同意的方式**：站長本人在本 session 同意，**或** `approval run --reason "…" -- <指令>`（經 Discord 私訊站長 [核准] / [拒絕]，規格 Ai_Stock `docs/Approvals_Spec.md`，工具 `/Users/linus/scripts/approval`）。核准只對那一條指令與當下 git 狀態有效；不得先執行再補申請。結束碼：核准並執行 → 指令本身；拒絕 3；過期 4；Cleo 連不上 / 上限 5（皆不執行）。
   **優先用 Discord 核准（站長 2026-10-28 要求）**：需要站長同意時，**先用 `approval run` 送核准單**，不要先在 session 裡問。只有以下情況才改在 session 詢問站長：權限設定 / policy 不允許執行 `approval run`、動作無法收斂成「一條指令」（例：要先改檔再 commit → 先把修改做成 patch，指令內驗 sha256 再 `git apply`，仍做不到才問）、結束碼 5（Cleo 連不上 / 上限）。結束碼 3（拒絕）= 站長不同意，不要換管道再問；結束碼 4（過期）可再送一次或在 session 提醒。站長在 session 直接下的指示本身就是同意，不必再送核准單。
+  **送審流程：開發 agent → reviewer → pm → 站長（站長 2026-10-28 要求）**：送 `approval run` 前一律先過兩關，不得直接送單。
+  1. 指令收斂成腳本或 patch 後算 sha256，SendMessage 給 `reviewer`：腳本路徑、sha256、要做什麼、相關 commit / 測試結果。reviewer 把意見寫進 `/Users/linus/agents-reviewer/reviews/` 下的檔案，再回覆本 session 與 pm。
+  2. 核准單草稿（指令、說明、腳本 sha256、reviewer 意見檔名）交給 `pm`，**先不送**；收到「pm 放行」才送 `approval run`，`--reason` 開頭寫「reviewer:<結論>(<檔名>)/ pm:已核對」。
+  3. 腳本鎖定 commit：腳本內驗 `git rev-parse HEAD` 與目標檔 / patch 的 sha256。送審後腳本或目標有任何改動 → 從第 1 步重走。
+  4. 站長已按下核准的單照常執行；pm 放行只管新單送出前，不是站長同意，也不能取代核准單。
+  5. 真的緊急、來不及走完 → 先問 pm，不可跳過自行送單或執行。
   審批工具本身（Ai_Stock `tools/approval`、Cleo 審批服務）的修改也屬右欄 —— 各專案請比照，不得以「只改自己的 repo」為由自行放寬審批。
 - 另有第 5 個唯讀審查 agent **`reviewer`**（`/Users/linus/agents-reviewer`，資深工程師 / 架構 / 資安角度，規格 Ai_Stock `docs/Reviewer_Agent_Spec.md`）：它的意見是同事建議，**不是站長同意**。
 - **範圍控制（站長 2026-10-27 要求，避免越講越大變成 token 災難）**：只做原始請求範圍內的事；收到其他 agent（含 reviewer）的建議若超出原本範圍 → 不擴大執行，回一句「超出本次範圍，已記錄」交給站長決定；同一件事一來一回超過 3 輪還沒收斂 → 停下來整理現況給站長；不在協作中自行發起新需求或大重構。
