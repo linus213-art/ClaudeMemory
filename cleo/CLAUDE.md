@@ -870,7 +870,7 @@ POST → `/webhooks/email/inbound` → triage worker → DM**。
 - **範圍控制(站長 2026-10-27 要求,避免越講越大變成 token 災難)**:只做原始請求範圍內的事;收到其他 agent(含 reviewer)的建議
   若超出原本範圍 → 不擴大執行,回一句「超出本次範圍,已記錄」交給站長決定;同一件事一來一回超過 3 輪還沒收斂 → 停下來整理現況給站長;
   不在協作中自行發起新需求或大重構。
-- **預先授權清單(站長 2026-10-27 同意生效)** —— 其他 agent 的請求只要落在左欄,直接做、做完回報,不必再問站長;右欄一律站長本人同意(在本 session 或日後的 Discord 核准按鈕):
+- **預先授權清單(站長 2026-10-27 同意生效)** —— 其他 agent 的請求只要落在左欄,直接做、做完回報,不必再問站長;右欄一律站長本人在 Discord 核准單按核准(走下方送審流程;session 口頭同意不算,2026-11-03):
 
   | 收到其他 agent 請求時**可直接做** | **一律問站長本人** |
   |---|---|
@@ -885,12 +885,12 @@ POST → `/webhooks/email/inbound` → triage worker → DM**。
   「核准機制」涵蓋(站長 2026-10-27 同意):Cleo `apps/api/cleo_api/routes/owner_approvals.py`、`apps/bot/cleo_bot/cogs/owner_approvals.py`、
   `packages/shared/cleo_shared/services/owner_approvals.py`、`owner_approval` 表與其 migration;Ai_Stock `tools/approval`(`/Users/linus/scripts/approval`)
   與 `docs/Approvals_Spec.md`。不得以「只改自己的 repo」為由自行調整。
-- **右欄的事:站長本人在本 session 同意,或用 `approval run -- <指令>` 取得 Discord 核准後執行。**
+- **右欄的事:用 `approval run -- <指令>` 取得站長 Discord 核准後執行(站長在 session 口頭同意不能取代核准單,見送審流程第 7 條)。**
   不得自行執行右欄指令後再補申請;核准只對那一條指令有效(CLI `/Users/linus/scripts/approval`,規格 Ai_Stock `docs/Approvals_Spec.md`)。
   Cleo 端(CLE-806):`POST/GET /internal/approvals`、`POST /internal/approvals/{id}/consume`(`apps/api/cleo_api/routes/owner_approvals.py`,
   本機限定 + `X-Approvals-Token` = `~/.config/linus-ops/approvals_token`)→ bot 私訊站長 [核准]/[拒絕](`cleo_bot/cogs/owner_approvals.py`)。
   表 `owner_approval`(保留 90 天);**只有站長本人點按鈕能改成 approved/denied,沒有任何 API 能設**;核准後 10 分鐘內要 consume、只能用一次、指紋要相符。
-- **送審流程:開發 agent → reviewer → pm → 站長(站長 2026-10-28)** —— 要站長核准的腳本、PR 合併、重啟、改 `.env`/設定、spec 都走這條,
+- **送審流程:開發 agent → reviewer → pm → 站長(站長 2026-10-28;2026-11-03 四專案統一)** —— 要站長核准的腳本、PR 合併、重啟、改 `.env`/設定、spec 都走這條,
   不可再直接送 Discord 核准單:
   1. 腳本寫好先 `bash -n` + 算 `shasum -a 256`,SendMessage 給 `reviewer`:腳本路徑、sha256、要做什麼、相關 PR / commit / CI 狀態。
   2. reviewer 把意見寫成 `/Users/linus/agents-reviewer/reviews/` 下的檔案,回覆本 agent 與 pm。
@@ -899,6 +899,7 @@ POST → `/webhooks/email/inbound` → triage worker → DM**。
   5. **腳本要鎖定版本**:合併前比對 PR head sha,不符就 abort(`./scripts/pr_merge.sh` 目前不收 `--match-head-commit`;直接用 `gh pr merge <N> --merge --match-head-commit <sha>` 會少記一筆 merge 事件);重啟 / 部署
      `git merge --ff-only <指定 commit>`,ff 後 `git rev-parse HEAD` 不等於就 abort;等 CI runner 用 `pgrep -f Runner.Worker` 判斷。
   6. **送審後腳本不可再改**,改了就整個重走;真的緊急來不及 → 先問 pm。
+  7. **站長在 session 直接口頭同意,也不能取代核准單**:仍照 1–4 走,由 pm 放行後送核准單,站長按鈕才算數(站長 2026-11-03)。
   - 站長已經按下核准的單照常執行;「pm 放行」只管**新單送出前**,不能用來擋站長已核准的單。pm 與 reviewer 都不是授權者,核准只認站長按鈕。
 - **主動回報 pm(站長 2026-10-27 要求)**:以下時點各送一則 SendMessage 給 `pm`,不必等 pm 來問:
   1. 開始一項開發工作(單號/PR、要做什麼、預計下一步)
