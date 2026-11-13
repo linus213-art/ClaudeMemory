@@ -392,6 +392,25 @@ Anthropic-compatible endpoint,所以走同一個 `AsyncAnthropic` SDK,只是 `ba
 - 成本暫時記成 `cost_usd=0.0`(`_PRICING` 表還沒有 deepseek-v4 entry);
   `external_api_calls` 還是有 token counts 可以後補。
 
+**會議文件可選 Claude / ChatGPT(CLE-828,站長限定)**:上傳確認「正確」後，白名單使用者多一則
+`[DeepSeek(預設)] [Claude] [ChatGPT]` 按鈕(`cogs/meeting_llm_choice.py`),寫進 `meeting_recordings.artifact_llm_choice`
+(只能設一次)。選 Claude / ChatGPT 的紀錄 / 摘要 / 總結改由本機 `claude -p` / `codex exec` 產生(不跑第一段校正，
+逐字稿 + 對照表直接給它),程式 `cleo_shared/services/local_ai_cli_extraction.py`:所有工具關閉、Claude 用專用設定目錄
+`~/.cleo-claude`、每次核對事件流;失敗**不自動改送**,問使用者「將改用 DeepSeek」。
+開關 `CLEO_MEETING_CLAUDE_ENABLED` / `CLEO_MEETING_CHATGPT_ENABLED`(預設 0)。Claude 登入 = 站長跑 `claude setup-token`
+存成 `~/.cleo-claude/oauth_token`(0600,到期日寫 `oauth_token.meta` 的 `expires_approx=`,到期前 14 天私訊提醒);
+撤銷:刪掉該檔即停用，並到 Claude 帳號設定撤銷 token。
+**ChatGPT(Codex)只在隔離使用者下跑(CLE-830,spec `docs/codex-isolated-user-spec.md`)**:公司 ChatGPT 工作區強制開 hooks、
+`unified_exec` 也關不掉，所以 Codex 改以隱藏的標準使用者 `cleocodex` 執行。Cleo 只能透過 root 擁有、不收參數的 runner 呼叫:
+`sudo -n -u cleocodex /usr/local/libexec/cleo-codex-runner`(原始碼 `tools/cleo-codex-runner/`,安裝見該目錄 `INSTALL.md`),
+stdin / stdout 傳 JSON、不用共用目錄。runner 每次呼叫都先做兩項檢查，再比對公司規則的指紋，任一項不過就不執行:
+自我檢查(讀不到 `/Users/linus`、連不到本機和區網服務，pf 擋 loopback / RFC1918 / link-local)、
+完整性檢查(hook、設定檔、crontab、殘留行程)。公司規則指紋不符時，exec 前就拒絕。
+ChatGPT 按鈕只在 `CLEO_MEETING_CODEX_MODE=isolated` 而且 `CLEO_MEETING_CODEX_RUNNER_SHA256` / `…_MANAGED_HASH`
+都有設定時才出現。安全類失敗會在同一個 bot 行程內停用 ChatGPT，並且第一次就私訊站長，重啟 bot 才恢復。
+**runner 改版要重新安裝並更新 sha256**;公司改規則要重新審查後才更新 managed hash。
+linus 自己的 `~/.codex` 由站長本人處理(登出公司帳號),agent 不碰。舊的 `~/.cleo-codex` 路徑已停用。
+
 **資料模型**:`packages/shared/cleo_shared/db/meeting_recordings.py`
 - `MeetingRecording` (line 79-171):`audio_blob_url`、`transcript_blob_url`、`status`(`awaiting_confirmation` → `pending` → `queued` → `preprocessing` → `transcribing` → `completed` / `failed` / `cancelled`)、`backend_used`
 - `MeetingArtifact` (line 173-230):`artifact_kind`(`minutes`/`summary`/`recap`/`follow_up`/`next_steps`)、`content_blob_url`(Word doc S3 URL)、`content_text_cipher`(加密文本)
